@@ -15,12 +15,11 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // User::factory(10)->create();
+        User::query()->updateOrCreate(
+            ['email' => 'rui95fer@gmail.com'],
+            ['name' => 'Rui Fernandes', 'password' => 'password']
+        );
 
-        User::factory()->create([
-            'name' => 'Rui Fernandes',
-            'email' => 'rui95fer@gmail.com',
-            'password' => 'password',
-        ]);
+        $this->call(TicketSeeder::class);
     }
 }
