@@ -1,6 +1,8 @@
 <?php
 
 use App\Ai\Agents\TicketTriage;
+use App\Models\AiRun;
+use App\Models\AiUsage;
 use App\Models\Ticket;
 use App\Models\User;
 use App\TicketDepartment;
@@ -49,6 +51,21 @@ test('user can triage a ticket', function () {
     expect($ticket->priority)->toBeInstanceOf(TicketPriority::class);
     expect($ticket->department)->toBeInstanceOf(TicketDepartment::class);
     expect($ticket->sentiment)->toBeInstanceOf(TicketSentiment::class);
+
+    $run = AiRun::first();
+    expect($run)->not->toBeNull();
+    expect($run->user_id)->toBe($user->id);
+    expect($run->ticket_id)->toBe($ticket->id);
+    expect($run->feature)->toBe('ticket-triage');
+    expect($run->status)->toBe('succeeded');
+    expect($run->provider)->not->toBeNull();
+    expect($run->model)->not->toBeNull();
+    expect($run->input_hash)->not->toBeNull();
+    expect($run->finished_at)->not->toBeNull();
+
+    $usage = AiUsage::first();
+    expect($usage)->not->toBeNull();
+    expect($usage->ai_run_id)->toBe($run->id);
 });
 
 test('triaging creates an AI summary message', function () {
