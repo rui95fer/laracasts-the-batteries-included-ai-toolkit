@@ -329,3 +329,82 @@ Course notes from [Laracasts](https://laracasts.com).
       ->name('tickets.ai.chat');
   ```
 
+---
+
+## Episode 04 — Demoing Our Chat Agent
+
+- **Render the CSRF token in a meta tag so JavaScript can read it.** Use it to send Laravel's `X-CSRF-TOKEN` header on every `POST` from the page.
+  ```blade
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  ```
+
+- **Move reusable agent calls into a service when the same logic is needed in more than one UI.** Keep controllers thin and avoid duplicating prompt handling across Livewire, controllers, or Inertia pages.
+  ```php
+  // Before — agent call living inside a controller
+  $response = (new TicketAssistant($ticket->id))->forUser($user)->prompt($message);
+
+  // After — service the controller, Livewire, and tests all share
+  $response = app(TicketChatService::class)->ask($ticket, $user, $message);
+  ```
+
+- **Wrap demo UI in a small Alpine component scoped to the ticket.** Localize state (`ticketId`, `prompt`, `response`) inside `x-data` so it doesn't leak into the page.
+  ```html
+  <div x-data="ticketChatDemo({ ticketId: {{ $ticket->id }} })">
+      <!-- prompt, response, send form -->
+  </div>
+  ```
+
+- **Support an optional `initialResponse` so the demo can render pre-seeded text.** Useful for tests and for replaying a previous reply without re-running the agent.
+  ```js
+  ticketChatDemo({ ticketId, initialResponse = '' }) {
+      return {
+          ticketId,
+          prompt: '',
+          response: initialResponse,
+          async send() { /* ... */ },
+      }
+  }
+  ```
+
+- **Ignore empty or too-short messages before hitting the network.** Trim, validate length, clear the prompt on send, then return early to avoid wasted calls.
+  ```js
+  const message = this.prompt.trim()
+  if (message.length < 3) return
+  this.prompt = ''
+  ```
+
+- **Send the chat prompt as JSON to the ticket-scoped AI chat endpoint.** Include the `X-CSRF-TOKEN` header so Laravel accepts the request from JavaScript.
+  ```js
+  const res = await fetch(`/tickets/${this.ticketId}/ai/chat`, {
+      method: 'POST',
+      headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+      },
+      body: JSON.stringify({ message }),
+  })
+  ```
+
+- **Throw on non-OK responses so the `catch` can log a single error path.** Use the server-provided `data.message` when available, then fall back to a generic message.
+  ```js
+  const data = await res.json().catch(() => ({}))
+
+  if (! res.ok) {
+      throw new Error(data.message ?? 'Request failed')
+  }
+
+  this.response = data.message ?? ''
+  ```
+
+- **Bind the response and prompt with `x-text` and `x-model` in the demo markup.** A `<form @submit.prevent="send">` keeps Enter-to-send working without page reloads.
+  ```html
+  <form @submit.prevent="send">
+      <div x-text="response"></div>
+      <textarea x-model="prompt"></textarea>
+      <button type="submit">Send</button>
+  </form>
+  ```
+
+- **Note: this demo returns the full response in one shot.** The next episode will stream tokens so replies appear progressively, like a real chat.
+
