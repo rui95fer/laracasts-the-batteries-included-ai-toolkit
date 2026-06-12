@@ -217,3 +217,115 @@ Course notes from [Laracasts](https://laracasts.com).
   }
   ```
 
+---
+
+## Episode 03 — Scoping Conversation Memory
+
+- **Bind chat memory to a single ticket with an `ai_conversation_id` column.** Prevents one ticket's history from leaking into another and keeps token usage predictable.
+  ```php
+  Schema::table('tickets', function (Blueprint $table) {
+      $table->string('ai_conversation_id')->nullable()->after('ai_tags');
+  });
+  ```
+
+- **Make a conversational `TicketAssistant` agent that auto-stores history.** Implement `Conversational` and use `RemembersConversations` so the SDK persists messages for you.
+  ```php
+  use Laravel\Ai\Attributes\{Provider, UseCheapestModel, MaxTokens};
+  use Laravel\Ai\Concerns\RemembersConversations;
+  use Laravel\Ai\Contracts\{Agent, Conversational};
+  use Laravel\Ai\Enums\Lab;
+  use Laravel\Ai\Promptable;
+
+  #[Provider(Lab::OpenAI)]
+  #[UseCheapestModel]
+  #[MaxTokens(1500)]
+  class TicketAssistant implements Agent, Conversational
+  {
+      use Promptable, RemembersConversations;
+
+      public function __construct(public readonly int $ticketId) {}
+  }
+  ```
+
+- **Stuff the prompt with the ticket's context, not the whole DB.** Concatenate status, priority, department, sentiment, tags, and the last few messages into the instructions so the model has what it needs.
+  ```php
+  public function instructions(): string
+  {
+      $context = $this->ticketContext();
+
+      return "You are a support assistant. Stay strictly within the current ticket. "
+          ."If you are unsure, ask a clarifying question.\n\n"
+          .$context;
+  }
+  ```
+
+- **Build a compact context string from related ticket data.** Eager-load the most recent messages and tags, then format them as one block.
+  ```php
+  private function ticketContext(): string
+  {
+      $ticket = Ticket::with(['tags', 'messages' => fn ($q) => $q->latest()->limit(5)])
+          ->find($this->ticketId);
+
+      if (! $ticket) {
+          return 'Ticket context unavailable.';
+      }
+
+      $tags = $ticket->tags->pluck('name')->implode(', ') ?: 'none';
+      $messages = $ticket->messages->reverse()->map(
+          fn ($m) => "{$m->role}: {$m->body}"
+      )->implode("\n");
+
+      return "Subject: {$ticket->subject}\n"
+          ."Status: {$ticket->status->value}\n"
+          ."Priority: {$ticket->priority->value}\n"
+          ."Department: {$ticket->department?->value ?? 'n/a'}\n"
+          ."Sentiment: {$ticket->sentiment?->value ?? 'n/a'}\n"
+          ."Tags: {$tags}\n"
+          ."Recent messages:\n{$messages}";
+  }
+  ```
+
+- **Branch on whether the ticket already has a conversation id.** Use `forUser()` to start fresh, `continue()` to resume — both scope history to the signed-in user.
+  ```php
+  $agent = (new TicketAssistant($ticket->id))->forUser($request->user());
+
+  $response = $ticket->ai_conversation_id
+      ? $agent->continue($ticket->ai_conversation_id, as: $request->user())->prompt($prompt)
+      : $agent->prompt($prompt);
+
+  $ticket->update(['ai_conversation_id' => $response->conversationId]);
+  ```
+
+- **Log chat runs and usage with a dedicated `feature` key.** Reuse the `AiRun` / `AiUsage` pattern from episode 02 so chat and triage are distinguishable in the logs.
+  ```php
+  $run = AiRun::create([
+      'team_id'   => $ticket->team_id,
+      'user_id'   => $request->user()->id,
+      'ticket_id' => $ticket->id,
+      'feature'   => 'ticket-chat',
+      'status'    => 'running',
+      'provider'  => Lab::OpenAI->value,
+      'started_at' => now(),
+  ]);
+  ```
+
+- **Persist the user and assistant turns as ticket messages.** Each side of the exchange becomes a row, mirroring how the AI summary was stored in episode 01.
+  ```php
+  $ticket->messages()->create([
+      'user_id' => $request->user()->id,
+      'role'    => 'user',
+      'body'    => $request->input('message'),
+  ]);
+
+  $ticket->messages()->create([
+      'role' => 'agent',
+      'body' => $response->text,
+  ]);
+  ```
+
+- **Register the chat endpoint alongside triage.** One route, named for Wayfinder, so the frontend can target it by name.
+  ```php
+  Route::post('tickets/{ticket}/ai/chat', TicketChatController::class)
+      ->name('tickets.ai.chat');
+  ```
+

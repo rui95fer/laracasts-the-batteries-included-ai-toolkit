@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\TicketChatController;
 use App\Http\Controllers\TicketController;
 use App\Http\Controllers\TicketMessageController;
 use App\Http\Controllers\TicketTriageController;
@@ -23,6 +24,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
         Route::post('tickets/{ticket}/ai/triage', TicketTriageController::class)
             ->name('tickets.ai.triage');
+
+        Route::post('tickets/{ticket}/ai/chat', TicketChatController::class)
+            ->name('tickets.ai.chat');
     });
 });
 

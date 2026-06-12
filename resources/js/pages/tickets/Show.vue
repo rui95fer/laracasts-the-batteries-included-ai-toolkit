@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { Form, Head, Link } from '@inertiajs/vue3';
-import { Pencil, Sparkles, Trash2 } from '@lucide/vue';
+import { MessageSquare, Pencil, Sparkles, Trash2 } from '@lucide/vue';
 import { computed, ref } from 'vue';
+import TicketChatController from '@/actions/App/Http/Controllers/TicketChatController';
 import TicketController from '@/actions/App/Http/Controllers/TicketController';
 import TicketMessageController from '@/actions/App/Http/Controllers/TicketMessageController';
 import TicketTriageController from '@/actions/App/Http/Controllers/TicketTriageController';
@@ -377,6 +378,37 @@ function messageBadgeVariant(
                 <Button variant="outline" as-child class="w-full">
                     <Link :href="show(ticket.id)">Refresh ticket</Link>
                 </Button>
+
+                <div class="rounded-xl border border-border bg-card p-4">
+                    <h2 class="flex items-center gap-2 font-medium">
+                        <MessageSquare class="size-4" />
+                        AI assistant
+                    </h2>
+                    <p class="mt-1 text-sm text-muted-foreground">
+                        Ask the AI assistant about this ticket. Conversations stay scoped to the ticket.
+                    </p>
+                    <Form
+                        v-bind="TicketChatController.form(ticket.id)"
+                        reset-on-success
+                        :options="{ preserveScroll: true }"
+                        class="mt-4 space-y-3"
+                        v-slot="{ errors, processing }"
+                    >
+                        <Textarea
+                            name="message"
+                            required
+                            maxlength="10000"
+                            :rows="4"
+                            class="min-h-24 w-full"
+                            placeholder="Ask the assistant about this ticket..."
+                        ></Textarea>
+                        <InputError :message="errors.message" />
+                        <Button type="submit" :disabled="processing" class="w-full">
+                            <Sparkles class="size-4" />
+                            {{ processing ? 'Thinking...' : 'Ask assistant' }}
+                        </Button>
+                    </Form>
+                </div>
             </aside>
         </div>
     </div>

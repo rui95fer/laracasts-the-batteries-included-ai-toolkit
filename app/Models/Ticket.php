@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * @property int $id
@@ -27,6 +28,7 @@ use Illuminate\Support\Carbon;
  * @property TicketPriority $priority
  * @property TicketDepartment $department
  * @property TicketSentiment $sentiment
+ * @property string|null $ai_conversation_id
  * @property Carbon|null $last_message_at
  * @property Carbon|null $closed_at
  * @property Carbon|null $created_at
@@ -42,6 +44,7 @@ use Illuminate\Support\Carbon;
     'priority',
     'department',
     'sentiment',
+    'ai_conversation_id',
     'last_message_at',
     'closed_at',
 ])]
@@ -58,6 +61,20 @@ class Ticket extends Model
                     'number' => sprintf('TCK-%06d', $ticket->id),
                 ])->saveQuietly();
             }
+        });
+
+        static::deleting(function (Ticket $ticket): void {
+            $conversationId = $ticket->ai_conversation_id;
+
+            if ($conversationId === null) {
+                return;
+            }
+
+            $messagesTable = config('ai.conversations.tables.messages', 'agent_conversation_messages');
+            $conversationsTable = config('ai.conversations.tables.conversations', 'agent_conversations');
+
+            DB::table($messagesTable)->where('conversation_id', $conversationId)->delete();
+            DB::table($conversationsTable)->where('id', $conversationId)->delete();
         });
     }
 
