@@ -13,14 +13,27 @@ class DashboardController extends Controller
 {
     public function __invoke(Request $request): Response
     {
-        $tickets = Ticket::query()->ownedBy($request->user());
+        $stats = Ticket::query()
+            ->ownedBy($request->user())
+            ->selectRaw('
+                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as open_count,
+                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as pending_count,
+                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as closed_count,
+                SUM(CASE WHEN priority = ? THEN 1 ELSE 0 END) as urgent_count
+            ', [
+                TicketStatus::Open->value,
+                TicketStatus::Pending->value,
+                TicketStatus::Closed->value,
+                TicketPriority::Urgent->value,
+            ])
+            ->first();
 
         return Inertia::render('Dashboard', [
             'ticketStats' => [
-                'open' => (clone $tickets)->where('status', TicketStatus::Open)->count(),
-                'pending' => (clone $tickets)->where('status', TicketStatus::Pending)->count(),
-                'closed' => (clone $tickets)->where('status', TicketStatus::Closed)->count(),
-                'urgent' => (clone $tickets)->where('priority', TicketPriority::Urgent)->count(),
+                'open' => (int) ($stats->open_count ?? 0),
+                'pending' => (int) ($stats->pending_count ?? 0),
+                'closed' => (int) ($stats->closed_count ?? 0),
+                'urgent' => (int) ($stats->urgent_count ?? 0),
             ],
         ]);
     }

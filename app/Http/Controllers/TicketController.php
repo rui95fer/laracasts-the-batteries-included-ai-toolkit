@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\CreateTicket;
+use App\Actions\UpdateTicket;
 use App\Http\Requests\StoreTicketRequest;
 use App\Http\Requests\UpdateTicketRequest;
 use App\Models\Tag;
@@ -13,16 +15,17 @@ use App\TicketSentiment;
 use App\TicketStatus;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Inertia\Inertia;
 use Inertia\Response;
 
 class TicketController extends Controller
 {
-    /**
-     * Display a listing of the resource.
-     */
+    public function __construct(
+        private readonly CreateTicket $createTicket,
+        private readonly UpdateTicket $updateTicket,
+    ) {}
+
     public function index(Request $request): Response
     {
         Gate::authorize('viewAny', Ticket::class);
@@ -41,9 +44,6 @@ class TicketController extends Controller
         ]);
     }
 
-    /**
-     * Show the form for creating a new resource.
-     */
     public function create(): Response
     {
         Gate::authorize('create', Ticket::class);
@@ -54,49 +54,15 @@ class TicketController extends Controller
         ]);
     }
 
-    /**
-     * Store a newly created resource in storage.
-     */
     public function store(StoreTicketRequest $request): RedirectResponse
     {
-        $validated = $request->validated();
-        $tagNames = $validated['tags'] ?? [];
-        $now = now();
-
-        $ticket = DB::transaction(function () use ($request, $validated, $tagNames, $now): Ticket {
-            $ticket = Ticket::create([
-                'user_id' => $request->user()->id,
-                'subject' => $validated['subject'],
-                'customer_name' => $validated['customer_name'],
-                'customer_email' => $validated['customer_email'],
-                'status' => TicketStatus::Open,
-                'priority' => $validated['priority'],
-                'department' => $validated['department'],
-                'sentiment' => $validated['sentiment'],
-                'last_message_at' => $now,
-                'closed_at' => null,
-            ]);
-
-            $this->syncTags($ticket, $tagNames);
-
-            $ticket->messages()->create([
-                'type' => TicketMessageType::CustomerMessage,
-                'body' => $validated['initial_message'],
-                'author_name' => $ticket->customer_name,
-                'author_email' => $ticket->customer_email,
-            ]);
-
-            return $ticket;
-        });
+        $ticket = $this->createTicket->execute($request->user(), $request->validated());
 
         Inertia::flash('toast', ['type' => 'success', 'message' => __('Ticket created.')]);
 
         return to_route('tickets.show', $ticket);
     }
 
-    /**
-     * Display the specified resource.
-     */
     public function show(Ticket $ticket): Response
     {
         Gate::authorize('view', $ticket);
@@ -112,9 +78,6 @@ class TicketController extends Controller
         ]);
     }
 
-    /**
-     * Show the form for editing the specified resource.
-     */
     public function edit(Ticket $ticket): Response
     {
         Gate::authorize('update', $ticket);
@@ -128,47 +91,15 @@ class TicketController extends Controller
         ]);
     }
 
-    /**
-     * Update the specified resource in storage.
-     */
     public function update(UpdateTicketRequest $request, Ticket $ticket): RedirectResponse
     {
-        $validated = $request->validated();
-        $tagNames = $validated['tags'] ?? [];
-        $status = TicketStatus::from($validated['status']);
-
-        DB::transaction(function () use ($ticket, $validated, $tagNames, $status): void {
-            $ticket->fill([
-                'subject' => $validated['subject'],
-                'customer_name' => $validated['customer_name'],
-                'customer_email' => $validated['customer_email'],
-                'status' => $status,
-                'priority' => $validated['priority'],
-                'department' => $validated['department'],
-                'sentiment' => $validated['sentiment'],
-            ]);
-
-            if ($status === TicketStatus::Closed && $ticket->closed_at === null) {
-                $ticket->closed_at = now();
-            }
-
-            if ($status !== TicketStatus::Closed) {
-                $ticket->closed_at = null;
-            }
-
-            $ticket->save();
-
-            $this->syncTags($ticket, $tagNames);
-        });
+        $this->updateTicket->execute($ticket, $request->validated());
 
         Inertia::flash('toast', ['type' => 'success', 'message' => __('Ticket updated.')]);
 
         return to_route('tickets.show', $ticket);
     }
 
-    /**
-     * Remove the specified resource from storage.
-     */
     public function destroy(Ticket $ticket): RedirectResponse
     {
         Gate::authorize('delete', $ticket);
@@ -178,31 +109,6 @@ class TicketController extends Controller
         Inertia::flash('toast', ['type' => 'success', 'message' => __('Ticket deleted.')]);
 
         return to_route('tickets.index');
-    }
-
-    /**
-     * @param  array<int, string>  $tagNames
-     */
-    private function syncTags(Ticket $ticket, array $tagNames): void
-    {
-        $tagIds = collect($tagNames)
-            ->map(function (string $name): ?int {
-                $slug = Tag::slugFor($name);
-
-                if ($slug === '') {
-                    return null;
-                }
-
-                return Tag::firstOrCreate(
-                    ['slug' => $slug],
-                    ['name' => $name]
-                )->id;
-            })
-            ->filter()
-            ->values()
-            ->all();
-
-        $ticket->tags()->sync($tagIds);
     }
 
     /**

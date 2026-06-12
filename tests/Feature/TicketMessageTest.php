@@ -114,3 +114,26 @@ test('users cannot update messages on tickets owned by another user', function (
         ])
         ->assertForbidden();
 });
+
+test('deleting the second-to-last message succeeds and the final message is still protected', function () {
+    $user = User::factory()->create();
+    $ticket = Ticket::factory()->for($user)->create();
+    $first = TicketMessage::factory()->for($ticket)->create(['created_at' => now()->subHour()]);
+    $second = TicketMessage::factory()->for($ticket)->internalNote()->create(['created_at' => now()]);
+    $ticket->forceFill(['last_message_at' => $second->created_at])->save();
+
+    $this->actingAs($user)
+        ->delete(route('tickets.messages.destroy', [$ticket, $second]))
+        ->assertSessionHasNoErrors()
+        ->assertRedirect(route('tickets.show', $ticket));
+
+    $this->assertModelMissing($second);
+    $this->assertModelExists($first);
+    expect($ticket->refresh()->last_message_at->toJSON())->toBe($first->created_at->toJSON());
+
+    $this->actingAs($user)
+        ->delete(route('tickets.messages.destroy', [$ticket, $first]))
+        ->assertSessionHasErrors('message');
+
+    $this->assertModelExists($first);
+});

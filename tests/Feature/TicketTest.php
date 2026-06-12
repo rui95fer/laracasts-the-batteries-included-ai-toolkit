@@ -1,5 +1,8 @@
 <?php
 
+use App\Ai\Agents\TicketTriage;
+use App\Models\AiRun;
+use App\Models\AiUsage;
 use App\Models\Tag;
 use App\Models\Ticket;
 use App\Models\TicketMessage;
@@ -146,4 +149,35 @@ test('deleting a ticket removes messages and tag links but keeps reusable tags',
     $this->assertModelMissing($message);
     $this->assertModelExists($tag);
     expect(DB::table('tag_ticket')->count())->toBe(0);
+});
+
+test('deleting a triaged ticket cascades to its ai runs and usage records', function () {
+    $user = User::factory()->create();
+    $ticket = Ticket::factory()->for($user)->create();
+    $ticket->messages()->create([
+        'type' => TicketMessageType::CustomerMessage,
+        'body' => 'Help with billing.',
+        'author_name' => $ticket->customer_name,
+        'author_email' => $ticket->customer_email,
+    ]);
+
+    TicketTriage::fake();
+
+    $this->actingAs($user)
+        ->post(route('tickets.ai.triage', $ticket))
+        ->assertRedirect();
+
+    $run = AiRun::query()->where('ticket_id', $ticket->id)->firstOrFail();
+    $usage = AiUsage::query()->where('ai_run_id', $run->id)->firstOrFail();
+
+    expect($run->exists)->toBeTrue();
+    expect($usage->exists)->toBeTrue();
+
+    $this->actingAs($user)
+        ->delete(route('tickets.destroy', $ticket))
+        ->assertRedirect(route('tickets.index'));
+
+    $this->assertModelMissing($ticket);
+    $this->assertModelMissing($run);
+    $this->assertModelMissing($usage);
 });

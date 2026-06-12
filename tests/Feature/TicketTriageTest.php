@@ -101,10 +101,77 @@ test('triaging syncs tags from the AI response', function () {
         'author_email' => $ticket->customer_email,
     ]);
 
-    TicketTriage::fake();
+    TicketTriage::fake([
+        [
+            'priority' => 'normal',
+            'department' => 'support',
+            'sentiment' => 'neutral',
+            'tags' => ['billing', 'refund'],
+            'summary' => 'Customer needs billing assistance.',
+        ],
+    ]);
 
     $this->actingAs($user)
         ->post(route('tickets.ai.triage', $ticket));
 
-    expect($ticket->refresh()->tags()->count())->toBeGreaterThanOrEqual(0);
+    expect($ticket->refresh()->tags()->pluck('slug')->all())->toBe(['billing', 'refund']);
+});
+
+test('triage is idempotent for the same input hash', function () {
+    $user = User::factory()->create();
+    $ticket = Ticket::factory()->for($user)->create();
+    $ticket->messages()->create([
+        'type' => TicketMessageType::CustomerMessage,
+        'body' => 'Idempotent triage body.',
+        'author_name' => $ticket->customer_name,
+        'author_email' => $ticket->customer_email,
+    ]);
+
+    TicketTriage::fake();
+
+    $this->actingAs($user)
+        ->post(route('tickets.ai.triage', $ticket))
+        ->assertRedirect();
+
+    $runsAfterFirst = AiRun::query()->where('ticket_id', $ticket->id)->count();
+    $messagesAfterFirst = $ticket->messages()->count();
+
+    $this->actingAs($user)
+        ->post(route('tickets.ai.triage', $ticket))
+        ->assertRedirect();
+
+    expect(AiRun::query()->where('ticket_id', $ticket->id)->count())->toBe($runsAfterFirst);
+    expect($ticket->messages()->count())->toBe($messagesAfterFirst);
+});
+
+test('triage re-runs when a new message is added to the ticket', function () {
+    $user = User::factory()->create();
+    $ticket = Ticket::factory()->for($user)->create();
+    $ticket->messages()->create([
+        'type' => TicketMessageType::CustomerMessage,
+        'body' => 'Original message body.',
+        'author_name' => $ticket->customer_name,
+        'author_email' => $ticket->customer_email,
+    ]);
+
+    TicketTriage::fake();
+
+    $this->actingAs($user)
+        ->post(route('tickets.ai.triage', $ticket))
+        ->assertRedirect();
+
+    expect(AiRun::query()->where('ticket_id', $ticket->id)->count())->toBe(1);
+
+    $ticket->messages()->create([
+        'type' => TicketMessageType::CustomerMessage,
+        'body' => 'Follow-up message body.',
+        'author_name' => $ticket->customer_name,
+        'author_email' => $ticket->customer_email,
+    ]);
+
+    $this->actingAs($user)
+        ->post(route('tickets.ai.triage', $ticket))
+        ->assertRedirect();
+
+    expect(AiRun::query()->where('ticket_id', $ticket->id)->count())->toBe(2);
 });
