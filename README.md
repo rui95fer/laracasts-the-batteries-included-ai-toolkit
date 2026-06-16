@@ -408,3 +408,140 @@ Course notes from [Laracasts](https://laracasts.com).
 
 - **Note: this demo returns the full response in one shot.** The next episode will stream tokens so replies appear progressively, like a real chat.
 
+---
+
+## Episode 05 — Streaming AI Responses to the UI
+
+- **Stream AI responses to remove the "blank screen" wait.** Even a fast model feels slow if the user stares at nothing — progressive tokens make the interaction feel instant.
+  ```php
+  return (new TicketAssistant($ticket->id))->forUser($user)
+      ->stream('Draft a concise, friendly reply to the most recent user message.');
+  ```
+
+- **Persist the final streamed output on the run.** Add a nullable `output_text` column to `ai_runs` so every interaction, streamed or not, keeps a single audit record.
+  ```php
+  Schema::table('ai_runs', function (Blueprint $table) {
+      $table->text('output_text')->nullable()->after('error');
+  });
+  ```
+
+- **Register the new column on the model.** Without this, `AiRun` won't accept the field from mass-assignment.
+  ```php
+  #[Fillable([..., 'error', 'output_text'])]
+  class AiRun extends Model { /* ... */ }
+  ```
+
+- **Create an invocable controller dedicated to streaming.** Make it `__invoke` so the route maps a single action, then reuse the existing `TicketAssistant` agent.
+  ```php
+  class TicketDraftReplyStreamController
+  {
+      public function __invoke(Request $request, Ticket $ticket): \Symfony\Component\HttpFoundation\StreamedResponse
+      {
+          $agent = (new TicketAssistant($ticket->id))->forUser($request->user());
+          $prompt = 'Draft a concise, friendly reply to the most recent user message.';
+
+          $run = AiRun::create([
+              'team_id'   => $ticket->team_id,
+              'user_id'   => $request->user()->id,
+              'ticket_id' => $ticket->id,
+              'feature'   => 'draft-reply',
+              'status'    => 'running',
+              'provider'  => Lab::OpenAI->value,
+              'started_at'=> now(),
+          ]);
+
+          return $agent->stream($prompt, function (StreamedAgentResponse $response) use ($run) {
+              $run->update([
+                  'status'      => 'succeeded',
+                  'finished_at' => now(),
+                  'model'       => $response->meta->model,
+                  'output_text' => $response->text,
+              ]);
+
+              if ($response->usage) {
+                  $run->usage()->create([
+                      'prompt_tokens'    => $response->usage->promptTokens,
+                      'completion_tokens' => $response->usage->completionTokens,
+                      'total_tokens'     => $response->usage->totalTokens,
+                      'cost_usd'         => $response->usage->cost ?? null,
+                  ]);
+              }
+          });
+      }
+  }
+  ```
+
+- **Register the streaming route alongside the chat route.** A separate URL lets the chat demo stay non-streaming while the draft reply streams.
+  ```php
+  Route::post('tickets/{ticket}/ai/draft-reply/stream', TicketDraftReplyStreamController::class)
+      ->name('tickets.ai.draft-reply.stream');
+  ```
+
+- **Build a small Alpine component to drive the stream.** Localize `ticketId`, `draft`, and an `AbortController` so you can cancel mid-stream.
+  ```html
+  <div x-data="ticketDraftReplyDemo({ ticketId: {{ $ticket->id }}, initialDraft: '' })">
+      <textarea data-ticket-reply x-model="draft"></textarea>
+      <button @click="streamDraft()">Draft reply</button>
+      <button @click="cancel()">Cancel</button>
+      <button @click="insertIntoReply()">Insert into reply</button>
+  </div>
+  ```
+
+- **Request the stream with `Accept: text/event-stream` and an abort signal.** The browser exposes streams via `fetch`; the signal lets you cancel cleanly.
+  ```js
+  streamDraft() {
+      this.draft = ''
+      this.controller = new AbortController()
+
+      return fetch(`/tickets/${this.ticketId}/ai/draft-reply/stream`, {
+          method: 'POST',
+          headers: {
+              'Accept': 'text/event-stream',
+              'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+          },
+          signal: this.controller.signal,
+      })
+  },
+  ```
+
+- **Read the SSE body with a `ReadableStream` reader, a `TextDecoder`, and a buffer.** SSE events are separated by two newlines; incomplete chunks must be kept until the next read.
+  ```js
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() // keep the last (possibly incomplete) chunk
+  }
+  ```
+
+- **Parse `text_delta` events and append them to the draft.** Ignore any non-`data:` preambles; bail out when the server sends `data: [DONE]`.
+  ```js
+  for (const part of parts) {
+      if (! part.startsWith('data:')) continue
+      const payload = part.replace(/^data:\s*/, '').trim()
+      if (payload === '[DONE]') return
+
+      const event = JSON.parse(payload)
+      if (event.type === 'text_delta') {
+          this.draft += event.delta
+      }
+  }
+  ```
+
+- **Abort the stream on demand and copy the draft into the reply box.** A single `AbortController` call cancels the in-flight `fetch`.
+  ```js
+  cancel() {
+      this.controller?.abort()
+  },
+
+  insertIntoReply() {
+      document.querySelector('[data-ticket-reply]').value = this.draft
+  },
+  ```
+

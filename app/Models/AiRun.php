@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property string|null $started_at
  * @property string|null $finished_at
  * @property string|null $error
+ * @property string|null $output_text
  */
 #[Fillable([
     'user_id',
@@ -31,6 +32,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'started_at',
     'finished_at',
     'error',
+    'output_text',
 ])]
 class AiRun extends Model
 {
