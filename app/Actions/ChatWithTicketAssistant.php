@@ -33,7 +33,7 @@ class ChatWithTicketAssistant
     {
         $ticket = Ticket::query()->findOrFail($ticket->id);
 
-        $agent = new TicketAssistant($ticket->id);
+        $agent = new TicketAssistant($ticket->id, $user->id);
 
         if ($ticket->ai_conversation_id) {
             $agent->continue($ticket->ai_conversation_id, as: $user);

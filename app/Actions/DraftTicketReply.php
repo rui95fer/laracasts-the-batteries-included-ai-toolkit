@@ -41,7 +41,7 @@ class DraftTicketReply
             'started_at' => now(),
         ]);
 
-        $agent = new TicketAssistant($ticket->id);
+        $agent = new TicketAssistant($ticket->id, $user->id);
 
         $response = $agent->stream($prompt);
 

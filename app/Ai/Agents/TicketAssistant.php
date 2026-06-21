@@ -2,10 +2,14 @@
 
 namespace App\Ai\Agents;
 
+use App\Ai\Tools\TicketFactsTool;
+use App\Ai\Tools\TicketMessagesTool;
 use App\Models\Tag;
 use App\Models\Ticket;
 use App\Models\TicketMessage;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Laravel\Ai\Attributes\MaxSteps;
 use Laravel\Ai\Attributes\MaxTokens;
 use Laravel\Ai\Attributes\Model;
 use Laravel\Ai\Attributes\Provider;
@@ -13,24 +17,31 @@ use Laravel\Ai\Attributes\Timeout;
 use Laravel\Ai\Concerns\RemembersConversations;
 use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Contracts\Conversational;
+use Laravel\Ai\Contracts\HasTools;
 use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Promptable;
 use Stringable;
 
 #[Provider(Lab::OpenRouter)]
 #[Model('openrouter/owl-alpha')]
-#[MaxTokens(1500)]
+#[MaxTokens(5000)]
+#[MaxSteps(3)]
 #[Timeout(120)]
-class TicketAssistant implements Agent, Conversational
+class TicketAssistant implements Agent, Conversational, HasTools
 {
     use Promptable, RemembersConversations;
 
-    public function __construct(public readonly int $ticketId) {}
+    public function __construct(
+        public readonly int $ticketId,
+        public readonly int $userId = 0,
+    ) {}
 
     public function instructions(): Stringable|string
     {
         return 'You are a support assistant. Stay strictly within the current ticket. '
-            ."If you are unsure, ask a clarifying question.\n\n"
+            .'If you are unsure, ask a clarifying question. Use the ticket_facts tool to fetch '
+            .'authoritative current ticket facts and the ticket_messages tool to fetch recent '
+            ."ticket messages rather than guessing.\n\n"
             .$this->ticketContext();
     }
 
@@ -40,6 +51,19 @@ class TicketAssistant implements Agent, Conversational
     protected function maxConversationMessages(): int
     {
         return 20;
+    }
+
+    /**
+     * @return Tool[]
+     */
+    public function tools(): iterable
+    {
+        $user = $this->userId > 0 ? User::query()->find($this->userId) : null;
+
+        return [
+            new TicketFactsTool($this->ticketId, $user),
+            new TicketMessagesTool($this->ticketId, $user),
+        ];
     }
 
     private function ticketContext(): string

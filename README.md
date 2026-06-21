@@ -545,3 +545,132 @@ Course notes from [Laracasts](https://laracasts.com).
   },
   ```
 
+---
+
+## Episode 06 — Giving AI the Ability to Use Tools
+
+- **LLMs are great at words but bad at facts — give your agent tools with strict input schemas plus authorization inside each tool so the model can only read what you explicitly allow.**
+  ```php
+  // A tool is a small, scoped gateway between the model and your data.
+  ```
+
+- **Scaffold a tool with `php artisan make:tool`; it lands in `app/Ai/Tools`.**
+  ```bash
+  php artisan make:tool TicketFactsTool
+  php artisan make:tool TicketMessagesTool
+  ```
+
+- **Scope a tool to the data it should see by accepting `ticketId` and `user` through the constructor so calls can't bleed across records.**
+  ```php
+  public function __construct(
+      public readonly int $ticketId,
+      public readonly ?User $user = null,
+  ) {}
+  ```
+
+- **Describe what the tool returns in `description()` so the model knows when to call it.**
+  ```php
+  public function description(): string
+  {
+      return 'Fetches the key facts about the current ticket: status, priority, department, sentiment, tags.';
+  }
+  ```
+
+- **Return an empty `schema()` when the tool needs no input from the model — only the scoped data you already injected.**
+  ```php
+  public function schema(JsonSchema $schema): array
+  {
+      return [];
+  }
+  ```
+
+- **Constrain the inputs the model must provide in `schema()` with type, range, and `required()`.**
+  ```php
+  public function schema(JsonSchema $schema): array
+  {
+      return [
+          'count' => $schema->integer()->min(1)->max(5)->required(),
+      ];
+  }
+  ```
+
+- **Authorize inside `handle()` — fall back to the signed-in user, then return `'unauthorized'` if the caller or ticket can't be resolved.**
+  ```php
+  $user ??= $this->user ?? auth()->user();
+
+  if (! $user) {
+      return 'unauthorized';
+  }
+
+  $ticket = Ticket::with('tags')->find($this->ticketId);
+
+  if (! $ticket) {
+      return 'unauthorized';
+  }
+  ```
+
+- **Return compact JSON (not a model) so the model can read the payload directly.**
+  ```php
+  return json_encode([
+      'id'         => $ticket->id,
+      'subject'    => $ticket->subject,
+      'status'     => $ticket->status->value,
+      'priority'   => $ticket->priority->value,
+      'department' => $ticket->department?->value,
+      'sentiment'  => $ticket->sentiment?->value,
+      'tags'       => $ticket->tags->pluck('name')->all(),
+  ], JSON_PRETTY_PRINT);
+  ```
+
+- **Clamp model-provided inputs to the range declared in `schema()` before querying.**
+  ```php
+  $count = max(1, min(5, $request->integer('count', 3)));
+  ```
+
+- **Return the most recent N messages, reversed, so the model sees them in chronological order.**
+  ```php
+  return $ticket->messages()
+      ->latest()
+      ->limit($count)
+      ->get()
+      ->reverse()
+      ->map(fn ($m) => ['role' => $m->role, 'body' => $m->body])
+      ->values()
+      ->toJson(JSON_PRETTY_PRINT);
+  ```
+
+- **Expose tools to an agent by implementing `HasTools` and returning them from `tools()`.**
+  ```php
+  use Laravel\Ai\Contracts\HasTools;
+
+  class TicketAssistant implements Agent, Conversational, HasTools
+  {
+      public function tools(): iterable
+      {
+          $user = $this->userId ? User::find($this->userId) : null;
+
+          return [
+              new TicketFactsTool($this->ticketId, $user),
+              new TicketMessagesTool($this->ticketId, $user),
+          ];
+      }
+  }
+  ```
+
+- **Pass the authenticated `userId` into the agent when constructing it so its tools can scope every call.**
+  ```php
+  $agent = (new TicketAssistant($ticket->id, $request->user()->id))->forUser($request->user());
+  ```
+
+- **Cap tool chaining with `#[MaxSteps]` and bump `#[MaxTokens]` — tool-using runs need more room and shouldn't loop forever.**
+  ```php
+  #[MaxSteps(3)]
+  #[MaxTokens(5000)]
+  class TicketAssistant implements Agent, Conversational, HasTools
+  ```
+
+- **The model decides when to call a tool — your prompt and the tool's `description()` are what steer that choice, and you can verify the call in the provider's request logs.**
+  ```php
+  // Asking "what were the last two messages?" makes the model call TicketMessagesTool with count=2.
+  ```
+
