@@ -17,7 +17,7 @@ return [
     'default_for_images' => 'gemini',
     'default_for_audio' => 'openai',
     'default_for_transcription' => 'openai',
-    'default_for_embeddings' => 'openai',
+    'default_for_embeddings' => 'openrouter',
     'default_for_reranking' => 'cohere',
 
     /*
@@ -129,6 +129,12 @@ return [
         'openrouter' => [
             'driver' => 'openrouter',
             'key' => env('OPENROUTER_API_KEY'),
+            'models' => [
+                'embeddings' => [
+                    'default' => 'google/gemini-embedding-001',
+                    'dimensions' => 1536,
+                ],
+            ],
         ],
 
         'voyageai' => [

@@ -674,3 +674,69 @@ Course notes from [Laracasts](https://laracasts.com).
   // Asking "what were the last two messages?" makes the model call TicketMessagesTool with count=2.
   ```
 
+---
+
+## Episode 07 — Introducing RAG Basics
+
+- **RAG retrieves relevant data, augments the prompt, and generates a grounded answer.** It keeps responses tied to your data instead of the model's memory.
+  ```php
+  $results = $this->search($query);                        // retrieve
+  $response = $agent->prompt($this->context($results));    // augment + generate
+  ```
+
+- **Embeddings are numeric fingerprints used for semantic search.** Similar text produces vectors that are close together; dissimilar text is far apart.
+  ```php
+  $response = Embeddings::for([$query])->generate();
+  $queryVector = $response->embeddings[0];
+  ```
+
+- **A vector column is the production storage for embeddings.** SQLite has no vector type, so a `json` column works for demos; PostgreSQL with `pgvector` scales.
+  ```php
+  // SQLite demo
+  $table->json('embedding')->nullable();
+
+  // Production Postgres
+  $table->vector('embedding', dimensions: 1536)->index();
+  ```
+
+- **Cosine similarity returns `0.0` to `1.0`; closer to `1` is more similar.** Even a near-exact match rarely crosses `0.7` because the full document differs from a short query.
+  ```php
+  $score = $this->cosineSimilarity($queryVector, $documentVector);
+  ```
+
+- **Generate and persist document embeddings lazily.** Caching the vector on the row skips the API call on every subsequent search.
+  ```php
+  if (! is_array($document->embedding)) {
+      $document->update([
+          'embedding' => Embeddings::for([$title.' '.$body])->generate()->embeddings[0],
+      ]);
+  }
+  ```
+
+- **Pick a low `min_similarity` because real queries rarely match exactly.** A threshold around `0.3` is a reasonable starting point for natural-language questions against documents.
+  ```php
+  $minSimilarity = 0.3;
+  ```
+
+- **Score every document, filter, sort by score desc, then take the top N.** Keeping the result set small keeps the prompt focused.
+  ```php
+  $results = $documents
+      ->map(fn ($doc) => ['doc' => $doc, 'score' => $this->cosineSimilarity($queryVector, $doc->embedding)])
+      ->filter(fn ($r) => $r['score'] >= $minSimilarity)
+      ->sortByDesc('score')
+      ->take(5)
+      ->values();
+  ```
+
+- **Scope the search to the current team so users only see their own documents.** Always filter by the active `team_id` from the request.
+  ```php
+  $teamId = $request->user()->currentTeam->id;
+  $documents = Document::where('team_id', $teamId)->get();
+  ```
+
+- **Wire the search behind a single GET route and a sidebar link.** Return the query, scored results, and threshold so the view can render them.
+  ```php
+  Route::get('ai/knowledge-search', KnowledgeSearchController::class)
+      ->name('ai.knowledge-search');
+  ```
+

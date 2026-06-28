@@ -4,6 +4,7 @@ import {
     BookOpen,
     FolderGit2,
     LayoutGrid,
+    Sparkles,
     Ticket as TicketIcon,
 } from '@lucide/vue';
 import AppLogo from '@/components/AppLogo.vue';
@@ -19,6 +20,7 @@ import {
     SidebarMenuButton,
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
+import { knowledgeSearch } from '@/routes/ai';
 import { dashboard } from '@/routes';
 import { index as ticketsIndex } from '@/routes/tickets';
 import type { NavItem } from '@/types';
@@ -33,6 +35,11 @@ const mainNavItems: NavItem[] = [
         title: 'Tickets',
         href: ticketsIndex(),
         icon: TicketIcon,
+    },
+    {
+        title: 'AI Search',
+        href: knowledgeSearch(),
+        icon: Sparkles,
     },
 ];
 

@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\KnowledgeSearchController;
 use App\Http\Controllers\TicketChatController;
 use App\Http\Controllers\TicketController;
 use App\Http\Controllers\TicketDraftReplyStreamController;
@@ -12,6 +13,9 @@ Route::inertia('/', 'Welcome')->name('home');
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('dashboard', DashboardController::class)->name('dashboard');
+
+    Route::get('ai/knowledge-search', KnowledgeSearchController::class)
+        ->name('ai.knowledge-search');
 
     Route::resource('tickets', TicketController::class);
 
