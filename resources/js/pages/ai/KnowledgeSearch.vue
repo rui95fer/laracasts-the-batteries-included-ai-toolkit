@@ -13,8 +13,8 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { dashboard } from '@/routes';
-import { index as ticketsIndex } from '@/routes/tickets';
 import { knowledgeSearch } from '@/routes/ai';
+import { index as ticketsIndex } from '@/routes/tickets';
 
 type DocumentResult = {
     id: number;
@@ -50,7 +50,9 @@ function similarityLabel(score: number): string {
 
     <div class="flex flex-1 flex-col gap-6 p-4">
         <div class="flex flex-col gap-2">
-            <h1 class="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            <h1
+                class="flex items-center gap-2 text-2xl font-semibold tracking-tight"
+            >
                 <Sparkles class="size-6 text-primary" />
                 AI knowledge search
             </h1>
@@ -64,8 +66,9 @@ function similarityLabel(score: number): string {
             <CardHeader>
                 <CardTitle>Ask the knowledge base</CardTitle>
                 <CardDescription>
-                    Minimum similarity is {{ Math.round(minSimilarity * 100) }}%.
-                    Lower scores are hidden to reduce noise.
+                    Minimum similarity is
+                    {{ Math.round(minSimilarity * 100) }}%. Lower scores are
+                    hidden to reduce noise.
                 </CardDescription>
             </CardHeader>
             <CardContent>
@@ -91,11 +94,14 @@ function similarityLabel(score: number): string {
             </CardContent>
         </Card>
 
-        <div v-if="query.trim() === ''" class="rounded-xl border border-dashed p-8 text-center">
+        <div
+            v-if="query.trim() === ''"
+            class="rounded-xl border border-dashed p-8 text-center"
+        >
             <p class="font-medium">Start by typing a question</p>
             <p class="mt-1 text-sm text-muted-foreground">
-                For example, "How do I export project data?" or
-                "What is the API rate limit?".
+                For example, "How do I export project data?" or "What is the API
+                rate limit?".
             </p>
         </div>
 
@@ -117,7 +123,9 @@ function similarityLabel(score: number): string {
             <Card v-for="document in documents" :key="document.id">
                 <CardHeader>
                     <div class="flex items-start justify-between gap-3">
-                        <CardTitle class="text-base">{{ document.title }}</CardTitle>
+                        <CardTitle class="text-base">{{
+                            document.title
+                        }}</CardTitle>
                         <Badge variant="secondary">
                             {{ similarityLabel(0) }}
                         </Badge>

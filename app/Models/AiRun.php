@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 /**
  * @property int $id
  * @property int $user_id
- * @property int $ticket_id
+ * @property int|null $ticket_id
  * @property string $feature
  * @property string $status
  * @property string $provider

@@ -2,6 +2,7 @@
 import { Link } from '@inertiajs/vue3';
 import {
     BookOpen,
+    FileSearch,
     FolderGit2,
     LayoutGrid,
     Sparkles,
@@ -20,8 +21,8 @@ import {
     SidebarMenuButton,
     SidebarMenuItem,
 } from '@/components/ui/sidebar';
-import { knowledgeSearch } from '@/routes/ai';
 import { dashboard } from '@/routes';
+import { knowledgeSearch } from '@/routes/ai';
 import { index as ticketsIndex } from '@/routes/tickets';
 import type { NavItem } from '@/types';
 
@@ -40,6 +41,11 @@ const mainNavItems: NavItem[] = [
         title: 'AI Search',
         href: knowledgeSearch(),
         icon: Sparkles,
+    },
+    {
+        title: 'AI Documents',
+        href: '/ai/documents',
+        icon: FileSearch,
     },
 ];
 

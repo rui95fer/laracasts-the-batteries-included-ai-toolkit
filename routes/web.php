@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AIDocumentQAController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\KnowledgeSearchController;
 use App\Http\Controllers\TicketChatController;
@@ -16,6 +17,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::get('ai/knowledge-search', KnowledgeSearchController::class)
         ->name('ai.knowledge-search');
+
+    Route::get('ai/documents', [AIDocumentQAController::class, 'index'])
+        ->name('ai.documents.index');
+    Route::post('ai/documents', [AIDocumentQAController::class, 'store'])
+        ->name('ai.documents.store');
+    Route::post('ai/documents/ask', [AIDocumentQAController::class, 'ask'])
+        ->name('ai.documents.ask');
+    Route::delete('ai/documents/{document}', [AIDocumentQAController::class, 'destroy'])
+        ->name('ai.documents.destroy');
 
     Route::resource('tickets', TicketController::class);
 

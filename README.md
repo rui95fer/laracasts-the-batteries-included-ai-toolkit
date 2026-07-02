@@ -740,3 +740,193 @@ Course notes from [Laracasts](https://laracasts.com).
       ->name('ai.knowledge-search');
   ```
 
+---
+
+## Episode 08 — Switching to Vector Stores
+
+- **Let the provider manage embeddings and search so user-uploaded documents scale beyond a demo.** Hand the heavy lifting off so you don't need a special column type or a similarity routine.
+  ```php
+  $file = Document::fromPath('refund.pdf')->put();
+  $store = Stores::create('Knowledge Base');
+  $store->add($file->id);
+  ```
+
+- **Store the provider's IDs in your database — the provider is the system of record.** Without them you cannot fetch, search, or delete the file later.
+  ```php
+  Schema::create('uploaded_documents', function (Blueprint $table) {
+      $table->id();
+      $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+      $table->foreignId('user_id')->constrained();
+      $table->string('file_name');
+      $table->string('provider_file_id');   // find or delete the file
+      $table->string('provider_store_id');  // search the file
+      $table->json('metadata')->nullable(); // strict-scope filters
+      $table->timestamps();
+  });
+  ```
+
+- **Cast `metadata` as an array and wire up `team` and `user` on the model.**
+  ```php
+  class UploadedDocument extends Model
+  {
+      protected $fillable = [
+          'team_id', 'user_id', 'file_name',
+          'provider_file_id', 'provider_store_id', 'metadata',
+      ];
+
+      protected function casts(): array
+      {
+          return ['metadata' => 'array'];
+      }
+
+      public function team(): BelongsTo { return $this->belongsTo(Team::class); }
+      public function user(): BelongsTo { return $this->belongsTo(User::class); }
+  }
+  ```
+
+- **Use the smartest model, more tokens, and `MaxSteps` for a document Q&A agent.** Indexing and searching benefits from a stronger model, and tool-using runs need more room.
+  ```php
+  use Laravel\Ai\Attributes\{Provider, MaxSteps, MaxTokens, UseSmartestModel};
+  use Laravel\Ai\Enums\Lab;
+
+  #[Provider(Lab::OpenAI)]
+  #[UseSmartestModel]
+  #[MaxTokens(1600)]
+  #[MaxSteps(3)]
+  class DocumentQAAssistant implements Agent
+  {
+      use Promptable;
+  }
+  ```
+
+- **Inject the team, user, store, and optional provider file into the agent so every search is scoped.**
+  ```php
+  public function __construct(
+      public readonly int $teamId,
+      public readonly int $userId,
+      public readonly string $storeId,
+      public ?string $providerFileId = null,
+  ) {}
+  ```
+
+- **Tell the assistant to only answer from the uploaded documents and cite its sources.** This keeps responses grounded and stops the model from inventing answers.
+  ```php
+  public function instructions(): string
+  {
+      return 'You are a support documentation assistant. '
+          .'Only answer using the uploaded documents available through the file search tool. '
+          .'If the answer is not in the document(s), say you do not know. '
+          .'After the answer, include a short sources list with file names.';
+  }
+  ```
+
+- **Use `FileSearch` to let the model retrieve chunks without running embeddings yourself.** The provider handles chunking, embedding, and similarity; you just declare the store and scope the query.
+  ```php
+  use Laravel\Ai\Providers\Tools\FileSearch;
+
+  public function tools(): iterable
+  {
+      return [
+          new FileSearch(
+              stores: [$this->storeId],
+              callback: function ($query) {
+                  $query->where('team_id', $this->teamId)
+                      ->where('user_id', $this->userId);
+
+                  if ($this->providerFileId) {
+                      $query->where('provider_file_id', $this->providerFileId);
+                  }
+              },
+          ),
+      ];
+  }
+  ```
+
+- **Wrap an uploaded file with `Document::fromUpload()` and put it through `Files::put()`.** The SDK serializes the file using the provider's file API so you don't manage the upload yourself.
+  ```php
+  use Laravel\Ai\Files\Document as AiDocument;
+
+  $document = AiDocument::fromUpload($request->file('document'));
+  $file = Files::put($document); // stored on the provider
+  ```
+
+- **Add the file to the store, then persist the row with the provider IDs.** One upload produces three records: the provider file, the store membership, and your DB row.
+  ```php
+  $store->add($file->id);
+
+  UploadedDocument::create([
+      'team_id'           => $team->id,
+      'user_id'           => $user->id,
+      'file_name'         => $request->file('document')->getClientOriginalName(),
+      'provider_file_id'  => $file->id,
+      'provider_store_id' => $store->id,
+  ]);
+  ```
+
+- **Ask the agent inside an `AiRun` try/catch so failures are auditable.** Log the run, record usage on success, and surface the error on failure like other features.
+  ```php
+  $run = AiRun::create([
+      'team_id' => $team->id, 'user_id' => $user->id,
+      'feature' => 'document-qa', 'status' => 'running',
+      'provider' => Lab::OpenAI->value, 'started_at' => now(),
+  ]);
+
+  try {
+      $response = (new DocumentQAAssistant(
+          teamId: $team->id, userId: $user->id,
+          storeId: $storeId, providerFileId: $providerFileId,
+      ))->prompt($request->input('question'));
+
+      $run->update(['status' => 'succeeded', 'finished_at' => now()]);
+
+      if ($response->usage) {
+          $run->usage()->create([
+              'prompt_tokens'    => $response->usage->promptTokens,
+              'completion_tokens'=> $response->usage->completionTokens,
+              'total_tokens'     => $response->usage->totalTokens,
+              'cost_usd'         => $response->usage->cost ?? null,
+          ]);
+      }
+  } catch (Throwable $e) {
+      $run->update(['status' => 'failed', 'finished_at' => now(), 'error' => $e->getMessage()]);
+      throw $e;
+  }
+  ```
+
+- **Delete in the right order: store membership, then provider file, then your row.** Reversing the order leaves orphaned data on the provider.
+  ```php
+  $store = Stores::get($document->provider_store_id);
+  $store->remove($document->provider_file_id);
+  Files::delete($document->provider_file_id);
+  $document->delete();
+  ```
+
+- **Resolve or create one vector store per team so uploads are scoped automatically.** Cache the store ID on the team to avoid recreating it on every upload.
+  ```php
+  $store = $team->provider_store_id
+      ? Stores::get($team->provider_store_id)
+      : tap(Stores::create("Team {$team->id}"), fn ($s) => $team->update(['provider_store_id' => $s->id]));
+  ```
+
+- **Normalize sources from the tool results so the view can render file names and scores.** Filter out anything that isn't the file search tool, then flatten the results.
+  ```php
+  private function normalizeSources(iterable $toolResults): array
+  {
+      return collect($toolResults)
+          ->filter(fn ($r) => $r->name === 'file_search')
+          ->flatMap(fn ($r) => $r->results)
+          ->map(fn ($r) => ['file' => $r->fileName, 'score' => $r->score])
+          ->all();
+  }
+  ```
+
+- **Register four routes for upload, ask, and delete, then add a sidebar link to the view.** Keep the action methods small and let the controller compose the agent call.
+  ```php
+  Route::prefix('ai/documents')->name('ai.documents.')->group(function () {
+      Route::get('/',  [AIDocumentQAController::class, 'index'])->name('index');
+      Route::post('/', [AIDocumentQAController::class, 'store'])->name('store');
+      Route::post('/ask', [AIDocumentQAController::class, 'ask'])->name('ask');
+      Route::delete('/{document}', [AIDocumentQAController::class, 'destroy'])->name('destroy');
+  });
+  ```
+
