@@ -176,3 +176,30 @@ test('deleting a ticket removes its ai conversation and messages', function () {
     expect(DB::table($messagesTable)->where('conversation_id', $conversationId)->count())->toBe(0);
     expect(DB::table($conversationsTable)->where('id', $conversationId)->exists())->toBeFalse();
 });
+
+test('chat falls back to the queue when the sync prompt fails and saves the user prompt immediately', function () {
+    config(['ai.conversations.generate_title' => false]);
+
+    $user = User::factory()->create();
+    $ticket = Ticket::factory()->for($user)->create();
+
+    TicketAssistant::fake()->preventStrayPrompts();
+
+    $this->actingAs($user)
+        ->from(route('tickets.show', $ticket))
+        ->post(route('tickets.ai.chat', $ticket), [
+            'message' => 'Provider is unavailable right now.',
+        ])
+        ->assertRedirect(route('tickets.show', $ticket));
+
+    $run = AiRun::query()->where('ticket_id', $ticket->id)->firstOrFail();
+
+    expect($run->feature)->toBe('ticket-chat')
+        ->and($run->status)->toBe('queued')
+        ->and($run->finished_at)->not->toBeNull()
+        ->and($run->error)->not->toBeNull();
+
+    expect($ticket->refresh()->messages()->where('body', 'AI chat prompt: Provider is unavailable right now.')->exists())->toBeTrue();
+
+    TicketAssistant::assertQueued(fn ($queued) => $queued->prompt === 'Provider is unavailable right now.');
+});

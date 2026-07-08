@@ -175,3 +175,53 @@ test('triage re-runs when a new message is added to the ticket', function () {
 
     expect(AiRun::query()->where('ticket_id', $ticket->id)->count())->toBe(2);
 });
+
+test('triage falls back to the queue when the sync prompt fails', function () {
+    $user = User::factory()->create();
+    $ticket = Ticket::factory()->for($user)->create();
+    $ticket->messages()->create([
+        'type' => TicketMessageType::CustomerMessage,
+        'body' => 'The provider is timing out.',
+        'author_name' => $ticket->customer_name,
+        'author_email' => $ticket->customer_email,
+    ]);
+
+    TicketTriage::fake()->preventStrayPrompts();
+
+    $this->actingAs($user)
+        ->from(route('tickets.show', $ticket))
+        ->post(route('tickets.ai.triage', $ticket))
+        ->assertRedirect(route('tickets.show', $ticket));
+
+    $run = AiRun::query()->where('ticket_id', $ticket->id)->firstOrFail();
+
+    expect($run->status)->toBe('queued')
+        ->and($run->finished_at)->not->toBeNull()
+        ->and($run->error)->not->toBeNull();
+
+    expect(AiUsage::query()->where('ai_run_id', $run->id)->exists())->toBeFalse();
+
+    TicketTriage::assertQueued(fn ($queued) => str_contains($queued->prompt, 'The provider is timing out.'));
+});
+
+test('triage records the actual provider and model that responded', function () {
+    $user = User::factory()->create();
+    $ticket = Ticket::factory()->for($user)->create();
+    $ticket->messages()->create([
+        'type' => TicketMessageType::CustomerMessage,
+        'body' => 'Please triage this.',
+        'author_name' => $ticket->customer_name,
+        'author_email' => $ticket->customer_email,
+    ]);
+
+    TicketTriage::fake();
+
+    $this->actingAs($user)
+        ->post(route('tickets.ai.triage', $ticket))
+        ->assertRedirect();
+
+    $run = AiRun::query()->where('ticket_id', $ticket->id)->firstOrFail();
+
+    expect($run->provider)->not->toBeNull()
+        ->and($run->model)->not->toBeNull();
+});

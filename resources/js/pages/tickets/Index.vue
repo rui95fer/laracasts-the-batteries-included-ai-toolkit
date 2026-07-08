@@ -118,10 +118,15 @@ function priorityVariant(
                                 <Badge :variant="statusVariant(ticket)">
                                     {{ ticket.status_label }}
                                 </Badge>
-                                <Badge v-if="ticket.priority_label" :variant="priorityVariant(ticket)">
+                                <Badge
+                                    v-if="ticket.priority_label"
+                                    :variant="priorityVariant(ticket)"
+                                >
                                     {{ ticket.priority_label }}
                                 </Badge>
-                                <Badge v-else variant="outline">Untriaged</Badge>
+                                <Badge v-else variant="outline"
+                                    >Untriaged</Badge
+                                >
                             </div>
 
                             <div>

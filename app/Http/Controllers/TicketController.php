@@ -6,6 +6,7 @@ use App\Actions\CreateTicket;
 use App\Actions\UpdateTicket;
 use App\Http\Requests\StoreTicketRequest;
 use App\Http\Requests\UpdateTicketRequest;
+use App\Models\AiRun;
 use App\Models\Tag;
 use App\Models\Ticket;
 use App\TicketDepartment;
@@ -75,6 +76,7 @@ class TicketController extends Controller
         return Inertia::render('tickets/Show', [
             'ticket' => $this->ticketPayload($ticket, includeMessages: true),
             'options' => $this->options(),
+            'pendingAiRun' => $this->pendingAiRunPayload($ticket),
         ]);
     }
 
@@ -199,5 +201,30 @@ class TicketController extends Controller
         }
 
         return $payload;
+    }
+
+    /**
+     * Return the latest AI run for the ticket whose work is still in flight,
+     * or `null` when nothing is pending. The Vue page polls while this is set.
+     *
+     * @return array{id: int, feature: string, status: string}|null
+     */
+    private function pendingAiRunPayload(Ticket $ticket): ?array
+    {
+        $run = AiRun::query()
+            ->where('ticket_id', $ticket->id)
+            ->whereIn('status', ['running', 'queued'])
+            ->latest('id')
+            ->first();
+
+        if ($run === null) {
+            return null;
+        }
+
+        return [
+            'id' => $run->id,
+            'feature' => $run->feature,
+            'status' => $run->status,
+        ];
     }
 }

@@ -7,6 +7,7 @@ use App\Actions\DeleteAIDocument;
 use App\Actions\UploadAIDocument;
 use App\Http\Requests\AskAIDocumentRequest;
 use App\Http\Requests\StoreAIDocumentRequest;
+use App\Models\AiRun;
 use App\Models\UploadedDocument;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -45,6 +46,8 @@ class AIDocumentQAController extends Controller
             'lastQuestion' => session('ai_document_question'),
             'lastAnswer' => $lastAnswer,
             'lastDocumentId' => session('ai_document_document_id'),
+            'lastRunStatus' => session('ai_document_status'),
+            'pendingAiRun' => $this->pendingAiRunPayload($user),
         ]);
     }
 
@@ -82,10 +85,21 @@ class AIDocumentQAController extends Controller
             $document,
         );
 
-        return to_route('ai.documents.index')
+        $redirect = to_route('ai.documents.index')
             ->with('ai_document_question', $request->validated('question'))
-            ->with('ai_document_answer', $result['answer'])
-            ->with('ai_document_document_id', $document?->id);
+            ->with('ai_document_document_id', $document?->id)
+            ->with('ai_document_status', $result['status']);
+
+        if ($result['status'] === 'succeeded') {
+            $redirect->with('ai_document_answer', $result['answer']);
+        } else {
+            $redirect->with('toast', [
+                'type' => 'info',
+                'message' => __('AI provider is slow or unavailable. Answer is queued for background processing.'),
+            ]);
+        }
+
+        return $redirect;
     }
 
     public function destroy(Request $request, UploadedDocument $document): RedirectResponse
@@ -111,5 +125,30 @@ class AIDocumentQAController extends Controller
         return UploadedDocument::query()
             ->ownedBy($user)
             ->find($documentId);
+    }
+
+    /**
+     * Return the user's latest document Q&A run whose work is still in flight,
+     * or `null` when nothing is pending. The Vue page polls while this is set.
+     *
+     * @return array{id: int, status: string}|null
+     */
+    private function pendingAiRunPayload($user): ?array
+    {
+        $run = AiRun::query()
+            ->where('user_id', $user->id)
+            ->where('feature', 'document-qa')
+            ->whereIn('status', ['running', 'queued'])
+            ->latest('id')
+            ->first();
+
+        if ($run === null) {
+            return null;
+        }
+
+        return [
+            'id' => $run->id,
+            'status' => $run->status,
+        ];
     }
 }

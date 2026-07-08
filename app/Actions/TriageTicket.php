@@ -15,14 +15,17 @@ use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Laravel\Ai\Attributes\Model as ModelAttribute;
-use Laravel\Ai\Attributes\Provider as ProviderAttribute;
 use Laravel\Ai\Enums\Lab;
-use ReflectionClass;
+use Laravel\Ai\Responses\AgentResponse;
 use Throwable;
 
 class TriageTicket
 {
+    /**
+     * Seconds to wait for a synchronous prompt before falling back to the queue.
+     */
+    private const SYNC_TIMEOUT_SECONDS = 15;
+
     public function __construct(
         private readonly TicketTriage $agent = new TicketTriage,
         private readonly SyncTicketTags $syncTags = new SyncTicketTags,
@@ -36,6 +39,10 @@ class TriageTicket
      * latest successful run for the ticket to skip redundant work, and
      * the latest message is re-read inside the lock so that older
      * in-flight runs cannot overwrite newer ticket state.
+     *
+     * If the synchronous prompt fails (timeout, rate limit, provider
+     * outage), the run is marked as `queued` and dispatched to the
+     * background queue so the user request still succeeds.
      */
     public function execute(Ticket $ticket): ?AiRun
     {
@@ -68,31 +75,30 @@ class TriageTicket
             return null;
         }
 
-        $attributes = $this->resolveAgentAttributes();
-
         $run = AiRun::create([
             'user_id' => $ticket->user_id,
             'ticket_id' => $ticket->id,
             'feature' => 'ticket-triage',
             'status' => 'running',
-            'provider' => $attributes['provider'],
-            'model' => $attributes['model'],
+            'provider' => Lab::OpenRouter->value,
+            'model' => 'openrouter/owl-alpha',
             'input_hash' => $inputHash,
             'started_at' => now(),
         ]);
 
         try {
-            $response = $this->agent->prompt($prompt);
+            $response = $this->agent->prompt($prompt, timeout: self::SYNC_TIMEOUT_SECONDS);
         } catch (Throwable $e) {
-            $run->update([
-                'status' => 'failed',
-                'finished_at' => now(),
-                'error' => $e->getMessage(),
-            ]);
-
-            throw $e;
+            return $this->queueAgent($run, $prompt, $e->getMessage());
         }
 
+        $this->applyResponse($run, $ticket, $response);
+
+        return $run;
+    }
+
+    private function applyResponse(AiRun $run, Ticket $ticket, AgentResponse $response): void
+    {
         DB::transaction(function () use ($ticket, $response): void {
             $ticket = Ticket::query()->lockForUpdate()->findOrFail($ticket->id);
 
@@ -114,22 +120,57 @@ class TriageTicket
             }
         });
 
+        $this->markRunSucceeded($run, $response);
+    }
+
+    private function queueAgent(AiRun $run, string $prompt, string $failureMessage): AiRun
+    {
+        $run->update([
+            'status' => 'queued',
+            'finished_at' => now(),
+            'error' => $failureMessage,
+        ]);
+
+        $runId = $run->id;
+
+        $this->agent->queue($prompt)
+            ->then(function (AgentResponse $response) use ($runId): void {
+                $run = AiRun::query()->findOrFail($runId);
+                $ticket = Ticket::query()->findOrFail($run->ticket_id);
+
+                $this->applyResponse($run, $ticket, $response);
+            })
+            ->catch(function (Throwable $e) use ($runId): void {
+                AiRun::query()->where('id', $runId)->update([
+                    'status' => 'failed',
+                    'finished_at' => now(),
+                    'error' => $e->getMessage(),
+                ]);
+            });
+
+        return $run->refresh();
+    }
+
+    private function markRunSucceeded(AiRun $run, AgentResponse $response): void
+    {
         $run->update([
             'status' => 'succeeded',
             'finished_at' => now(),
+            'provider' => $response->meta->provider,
+            'model' => $response->meta->model,
         ]);
 
-        AiUsage::create([
-            'ai_run_id' => $run->id,
-            'prompt_tokens' => $response->usage->promptTokens,
-            'completion_tokens' => $response->usage->completionTokens,
-            'total_tokens' => $response->usage->promptTokens + $response->usage->completionTokens,
-            'cache_write_input_tokens' => $response->usage->cacheWriteInputTokens,
-            'cache_read_input_tokens' => $response->usage->cacheReadInputTokens,
-            'reasoning_tokens' => $response->usage->reasoningTokens,
-        ]);
-
-        return $run;
+        if ($response->usage) {
+            AiUsage::create([
+                'ai_run_id' => $run->id,
+                'prompt_tokens' => $response->usage->promptTokens,
+                'completion_tokens' => $response->usage->completionTokens,
+                'total_tokens' => $response->usage->promptTokens + $response->usage->completionTokens,
+                'cache_write_input_tokens' => $response->usage->cacheWriteInputTokens,
+                'cache_read_input_tokens' => $response->usage->cacheReadInputTokens,
+                'reasoning_tokens' => $response->usage->reasoningTokens,
+            ]);
+        }
     }
 
     private function latestMessageId(Ticket $ticket): int
@@ -165,20 +206,5 @@ class TriageTicket
             ->where('status', 'succeeded')
             ->where('input_hash', $inputHash)
             ->exists();
-    }
-
-    /**
-     * @return array{provider: string, model: string|null}
-     */
-    private function resolveAgentAttributes(): array
-    {
-        $reflection = new ReflectionClass($this->agent);
-        $provider = ($reflection->getAttributes(ProviderAttribute::class)[0] ?? null)?->newInstance()->value;
-        $model = ($reflection->getAttributes(ModelAttribute::class)[0] ?? null)?->newInstance()->value;
-
-        return [
-            'provider' => $provider instanceof Lab ? $provider->value : (string) $provider,
-            'model' => $model,
-        ];
     }
 }

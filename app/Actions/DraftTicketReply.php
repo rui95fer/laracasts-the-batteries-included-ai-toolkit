@@ -7,15 +7,17 @@ use App\Models\AiRun;
 use App\Models\AiUsage;
 use App\Models\Ticket;
 use App\Models\User;
-use Laravel\Ai\Attributes\Model as ModelAttribute;
-use Laravel\Ai\Attributes\Provider as ProviderAttribute;
 use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Responses\StreamableAgentResponse;
-use ReflectionClass;
 use Throwable;
 
 class DraftTicketReply
 {
+    /**
+     * Seconds to wait before a slow streaming response is abandoned.
+     */
+    private const SYNC_TIMEOUT_SECONDS = 15;
+
     /**
      * Stream a draft reply for the latest customer message of the given ticket.
      *
@@ -29,21 +31,19 @@ class DraftTicketReply
 
         $prompt = 'Draft a concise, friendly reply to the most recent customer message.';
 
-        $attributes = $this->resolveAgentAttributes();
-
         $run = AiRun::create([
             'user_id' => $user->id,
             'ticket_id' => $ticket->id,
             'feature' => 'ticket-draft-reply',
             'status' => 'running',
-            'provider' => $attributes['provider'],
-            'model' => $attributes['model'],
+            'provider' => Lab::OpenRouter->value,
+            'model' => 'openrouter/owl-alpha',
             'started_at' => now(),
         ]);
 
         $agent = new TicketAssistant($ticket->id, $user->id);
 
-        $response = $agent->stream($prompt);
+        $response = $agent->stream($prompt, timeout: self::SYNC_TIMEOUT_SECONDS);
 
         $response->then(function ($streamed) use ($run): void {
             try {
@@ -51,6 +51,8 @@ class DraftTicketReply
                     'status' => 'succeeded',
                     'finished_at' => now(),
                     'output_text' => $streamed->text,
+                    'provider' => $streamed->meta->provider,
+                    'model' => $streamed->meta->model,
                 ]);
 
                 if ($streamed->usage) {
@@ -70,20 +72,5 @@ class DraftTicketReply
         });
 
         return $response;
-    }
-
-    /**
-     * @return array{provider: string, model: string|null}
-     */
-    private function resolveAgentAttributes(): array
-    {
-        $reflection = new ReflectionClass(TicketAssistant::class);
-        $provider = ($reflection->getAttributes(ProviderAttribute::class)[0] ?? null)?->newInstance()->value;
-        $model = ($reflection->getAttributes(ModelAttribute::class)[0] ?? null)?->newInstance()->value;
-
-        return [
-            'provider' => $provider === null ? '' : ($provider instanceof Lab ? $provider->value : (string) $provider),
-            'model' => $model === null ? null : (string) $model,
-        ];
     }
 }

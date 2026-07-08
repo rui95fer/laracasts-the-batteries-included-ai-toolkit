@@ -930,3 +930,115 @@ Course notes from [Laracasts](https://laracasts.com).
   });
   ```
 
+---
+
+## Episode 09 — Designing for Reliability and Failure
+
+- **Design AI features to fail gracefully, because rate limits and outages are normal and your app should keep working when the model is slow or down.**
+  ```php
+  // Plan for the sync path, the async path, and the failure path up front.
+  ```
+
+- **Configure provider failover with an ordered list on the `#[Provider]` attribute.** Providers are tried in order, so put the preferred one first.
+  ```php
+  use Laravel\Ai\Attributes\Provider;
+  use Laravel\Ai\Enums\Lab;
+
+  #[Provider([Lab::OpenAI, Lab::Anthropic])]
+  class ProductDescriptionAgent implements Agent
+  {
+      use Promptable;
+  }
+  ```
+
+- **Know that failover only fires on failoverable errors like rate limits, provider overloads, unavailable providers, and insufficient credits.** Auth failures and bad request errors do not trigger failover.
+  ```php
+  // A 401 on the primary provider will not fall through to the backup.
+  ```
+
+- **Set `#[Timeout]` so a slow provider fails fast and the request can move on.** The value is in seconds.
+  ```php
+  use Laravel\Ai\Attributes\Timeout;
+
+  #[Timeout(15)]
+  class ProductDescriptionAgent implements Agent
+  ```
+
+- **Combine failover with `#[UseCheapestModel]` and a generous `#[MaxTokens]` to keep cost down while avoiding truncation errors on long descriptions.**
+  ```php
+  use Laravel\Ai\Attributes\{UseCheapestModel, MaxTokens};
+
+  #[UseCheapestModel]
+  #[MaxTokens(15000)]
+  class ProductDescriptionAgent implements Agent
+  ```
+
+- **Use the agent's `queue()` method as the fallback path so the user is not blocked by an AI failure.** Pass `then` and `catch` callbacks to update the run on success or failure.
+  ```php
+  use Laravel\Ai\Responses\AgentResponse;
+  use Throwable;
+
+  (new ProductDescriptionAgent)
+      ->queue($prompt)
+      ->then(fn (AgentResponse $response) => /* mark run succeeded, log usage */)
+      ->catch(fn (Throwable $e) => /* mark run failed */);
+  ```
+
+- **Track every attempt in `ai_runs` before prompting, then update the status on success, queue, or failure.** Reuse the same row across sync and async paths so the view can poll it.
+  ```php
+  $run = AiRun::create([
+      'team_id'    => $team->id,
+      'user_id'    => $user->id,
+      'feature'    => 'product-description',
+      'status'     => 'running',
+      'provider'   => Lab::OpenAI->value,
+      'started_at' => now(),
+  ]);
+
+  try {
+      $response = (new ProductDescriptionAgent)->prompt($prompt);
+      $run->update(['status' => 'succeeded', 'finished_at' => now()]);
+  } catch (Throwable $e) {
+      $run->update([
+          'status'      => 'queued',
+          'finished_at' => now(),
+          'error'       => $e->getMessage(),
+      ]);
+
+      (new ProductDescriptionAgent)->queue($prompt)->then(...)->catch(...);
+      throw $e;
+  }
+  ```
+
+- **Log `ai_usages` only when the response carries token data.** Not every run has usage, so guard the create behind a check.
+  ```php
+  if ($response->usage) {
+      $run->usage()->create([
+          'prompt_tokens'     => $response->usage->promptTokens,
+          'completion_tokens' => $response->usage->completionTokens,
+          'total_tokens'      => $response->usage->totalTokens,
+          'cost_usd'          => $response->usage->cost ?? null,
+      ]);
+  }
+  ```
+
+- **Build the agent prompt from validated form input so the model always receives clean, structured instructions.** Validate first, assemble the prompt second.
+  ```php
+  $data = $request->validate([
+      'name'     => ['required', 'string'],
+      'audience' => ['required', 'string'],
+      'tone'     => ['required', 'string'],
+      'features' => ['required', 'array'],
+  ]);
+
+  $prompt = "Product: {$data['name']}\n"
+      ."Audience: {$data['audience']}\n"
+      ."Tone: {$data['tone']}\n"
+      ."Features:\n".collect($data['features'])->map(fn ($f) => "- {$f}")->implode("\n");
+  ```
+
+- **Run a queue worker locally to process queued AI jobs.** The `queue()` method only fires when a worker is consuming the queue.
+  ```bash
+  php artisan queue:work
+  ```
+

@@ -16,7 +16,9 @@ use Laravel\Ai\Providers\Tools\FileSearchQuery;
 use Stringable;
 use Tool;
 
-#[Provider(Lab::OpenAI)]
+#[Provider([
+    Lab::OpenAI->value => 'gpt-4o-mini',
+])]
 #[UseSmartestModel]
 #[MaxTokens(1600)]
 #[MaxSteps(3)]

@@ -125,6 +125,32 @@ test('asking before any document is uploaded redirects back without creating a r
     expect(AiRun::query()->where('user_id', $user->id)->exists())->toBeFalse();
 });
 
+test('asking a question falls back to the queue when the sync prompt fails', function () {
+    $user = User::factory()->create();
+    $user->forceFill(['ai_document_store_id' => 'store_test'])->save();
+
+    DocumentQAAssistant::fake()->preventStrayPrompts();
+
+    $response = $this->actingAs($user)
+        ->post(route('ai.documents.ask'), [
+            'question' => 'Provider is unavailable right now.',
+        ]);
+
+    $response->assertRedirect(route('ai.documents.index'));
+    $response->assertSessionHas('ai_document_status', 'queued');
+
+    $run = AiRun::query()->where('user_id', $user->id)->firstOrFail();
+
+    expect($run->feature)->toBe('document-qa')
+        ->and($run->status)->toBe('queued')
+        ->and($run->finished_at)->not->toBeNull()
+        ->and($run->error)->not->toBeNull();
+
+    expect(AiUsage::query()->where('ai_run_id', $run->id)->exists())->toBeFalse();
+
+    DocumentQAAssistant::assertQueued(fn ($queued) => $queued->prompt === 'Provider is unavailable right now.');
+});
+
 test('question is required and capped at two thousand characters', function () {
     $user = User::factory()->create();
     $user->forceFill(['ai_document_store_id' => 'store_test'])->save();

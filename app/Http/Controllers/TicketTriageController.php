@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Actions\TriageTicket;
+use App\Models\AiRun;
 use App\Models\Ticket;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -17,13 +18,32 @@ class TicketTriageController extends Controller
     {
         Gate::authorize('update', $ticket);
 
-        $this->triage->execute($ticket);
+        $run = $this->triage->execute($ticket);
 
-        Inertia::flash('toast', [
-            'type' => 'success',
-            'message' => __('Ticket triaged.'),
-        ]);
+        Inertia::flash('toast', $this->toastFor($run));
 
         return redirect()->back();
+    }
+
+    /**
+     * @return array{type: string, message: string}
+     */
+    private function toastFor(?AiRun $run): array
+    {
+        if ($run === null) {
+            return ['type' => 'info', 'message' => __('Ticket is already up to date.')];
+        }
+
+        return match ($run->status) {
+            'queued' => [
+                'type' => 'info',
+                'message' => __('AI provider is slow or unavailable. Triage is queued for background processing.'),
+            ],
+            'failed' => [
+                'type' => 'error',
+                'message' => __('Triage could not be queued. Please try again.'),
+            ],
+            default => ['type' => 'success', 'message' => __('Ticket triaged.')],
+        };
     }
 }

@@ -4,7 +4,6 @@ namespace App\Ai\Agents;
 
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Laravel\Ai\Attributes\MaxTokens;
-use Laravel\Ai\Attributes\Model;
 use Laravel\Ai\Attributes\Provider;
 use Laravel\Ai\Attributes\Timeout;
 use Laravel\Ai\Contracts\Agent;
@@ -13,8 +12,10 @@ use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Promptable;
 use Stringable;
 
-#[Provider(Lab::OpenRouter)]
-#[Model('openrouter/owl-alpha')]
+#[Provider([
+    Lab::OpenRouter->value => 'openrouter/owl-alpha',
+    Lab::OpenAI->value => 'gpt-4o-mini',
+])]
 #[MaxTokens(1200)]
 #[Timeout(120)]
 class TicketTriage implements Agent, HasStructuredOutput

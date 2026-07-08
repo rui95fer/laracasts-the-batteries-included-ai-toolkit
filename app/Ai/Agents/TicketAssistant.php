@@ -11,7 +11,6 @@ use App\Models\User;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Laravel\Ai\Attributes\MaxSteps;
 use Laravel\Ai\Attributes\MaxTokens;
-use Laravel\Ai\Attributes\Model;
 use Laravel\Ai\Attributes\Provider;
 use Laravel\Ai\Attributes\Timeout;
 use Laravel\Ai\Concerns\RemembersConversations;
@@ -22,8 +21,10 @@ use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Promptable;
 use Stringable;
 
-#[Provider(Lab::OpenRouter)]
-#[Model('openrouter/owl-alpha')]
+#[Provider([
+    Lab::OpenRouter->value => 'openrouter/owl-alpha',
+    Lab::OpenAI->value => 'gpt-4o-mini',
+])]
 #[MaxTokens(5000)]
 #[MaxSteps(3)]
 #[Timeout(120)]

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Form, Head, Link } from '@inertiajs/vue3';
+import { Form, Head, Link, usePoll } from '@inertiajs/vue3';
 import { FileText, Sparkles, Trash2, Upload } from '@lucide/vue';
 import { computed, ref } from 'vue';
 import AIDocumentQAController from '@/actions/App/Http/Controllers/AIDocumentQAController';
@@ -30,6 +30,11 @@ const props = defineProps<{
     lastQuestion: string | null;
     lastAnswer: string | null;
     lastDocumentId: number | null;
+    lastRunStatus: string | null;
+    pendingAiRun: {
+        id: number;
+        status: string;
+    } | null;
 }>();
 
 defineOptions({
@@ -52,6 +57,12 @@ const uploadAction = AIDocumentQAController.store.form();
 const askAction = AIDocumentQAController.ask.form();
 
 const hasDocuments = computed(() => props.documents.length > 0);
+
+usePoll(3000, {}, { autoStart: props.pendingAiRun !== null });
+
+const isPending = computed(
+    () => props.pendingAiRun !== null || props.lastRunStatus === 'queued',
+);
 
 const askFormInitialValues = {
     question: '',
@@ -218,7 +229,17 @@ function confirmDelete(event: Event): void {
                 </CardHeader>
                 <CardContent>
                     <div
-                        v-if="!lastAnswer"
+                        v-if="isPending"
+                        class="flex items-center gap-2 rounded-md border border-dashed p-4 text-sm text-muted-foreground"
+                        role="status"
+                    >
+                        <span
+                            class="inline-block size-2 animate-pulse rounded-full bg-current"
+                        />
+                        AI is processing this question in the background.
+                    </div>
+                    <div
+                        v-else-if="!lastAnswer"
                         class="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground"
                     >
                         Ask a question to see the answer here.

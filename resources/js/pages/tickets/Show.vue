@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Form, Head, Link } from '@inertiajs/vue3';
+import { Form, Head, Link, usePoll } from '@inertiajs/vue3';
 import { MessageSquare, Pencil, Sparkles, Trash2 } from '@lucide/vue';
 import { computed, ref } from 'vue';
 import TicketChatController from '@/actions/App/Http/Controllers/TicketChatController';
@@ -28,6 +28,11 @@ import type { Ticket, TicketMessage, TicketOptions } from '@/types';
 const props = defineProps<{
     ticket: Ticket;
     options: TicketOptions;
+    pendingAiRun: {
+        id: number;
+        feature: string;
+        status: string;
+    } | null;
 }>();
 
 const messageTypeOptions = computed(() =>
@@ -37,6 +42,8 @@ const messageTypeOptions = computed(() =>
             props.ticket.status === 'closed' && option.value === 'agent_reply',
     })),
 );
+
+usePoll(3000, {}, { autoStart: props.pendingAiRun !== null });
 
 defineOptions({
     layout: {
@@ -105,6 +112,14 @@ function csrfToken(): string {
     return meta instanceof HTMLMetaElement ? (meta.content ?? '') : '';
 }
 
+const pendingLabel = computed<string | null>(() => {
+    if (!props.pendingAiRun) {
+        return null;
+    }
+
+    return props.pendingAiRun.status === 'queued' ? 'AI queued' : 'AI running';
+});
+
 async function streamDraftReply(): Promise<void> {
     if (isStreaming.value) {
         return;
@@ -149,7 +164,7 @@ async function streamDraftReply(): Promise<void> {
             buffer = parts.pop() ?? '';
 
             for (const part of parts) {
-                if (! part.startsWith('data:')) {
+                if (!part.startsWith('data:')) {
                     continue;
                 }
 
@@ -210,6 +225,12 @@ function insertDraftIntoReply(): void {
                         ticket.number
                     }}</span>
                     <Badge>{{ ticket.status_label }}</Badge>
+                    <Badge v-if="pendingLabel" variant="outline">
+                        <span
+                            class="mr-1 inline-block size-2 animate-pulse rounded-full bg-current"
+                        />
+                        {{ pendingLabel }}
+                    </Badge>
                     <Badge v-if="ticket.priority_label" variant="secondary">{{
                         ticket.priority_label
                     }}</Badge>
@@ -455,8 +476,9 @@ function insertDraftIntoReply(): void {
 
                         <pre
                             v-if="draft.length > 0"
-                            class="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-3 font-sans text-sm"
-                        >{{ draft }}</pre>
+                            class="max-h-48 overflow-y-auto rounded-md border border-border bg-muted/40 p-3 font-sans text-sm whitespace-pre-wrap"
+                            >{{ draft }}</pre
+                        >
                     </div>
 
                     <Form
@@ -537,7 +559,8 @@ function insertDraftIntoReply(): void {
                         AI assistant
                     </h2>
                     <p class="mt-1 text-sm text-muted-foreground">
-                        Ask the AI assistant about this ticket. Conversations stay scoped to the ticket.
+                        Ask the AI assistant about this ticket. Conversations
+                        stay scoped to the ticket.
                     </p>
                     <Form
                         v-bind="TicketChatController.form(ticket.id)"
@@ -555,7 +578,11 @@ function insertDraftIntoReply(): void {
                             placeholder="Ask the assistant about this ticket..."
                         ></Textarea>
                         <InputError :message="errors.message" />
-                        <Button type="submit" :disabled="processing" class="w-full">
+                        <Button
+                            type="submit"
+                            :disabled="processing"
+                            class="w-full"
+                        >
                             <Sparkles class="size-4" />
                             {{ processing ? 'Thinking...' : 'Ask assistant' }}
                         </Button>
