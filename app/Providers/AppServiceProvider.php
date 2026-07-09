@@ -2,11 +2,15 @@
 
 namespace App\Providers;
 
+use App\Listeners\RecordAiUsage;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
+use Laravel\Ai\Events\AgentPrompted;
+use Laravel\Ai\Events\AgentStreamed;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -24,6 +28,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureDefaults();
+        $this->registerAiEventListeners();
     }
 
     /**
@@ -46,5 +51,14 @@ class AppServiceProvider extends ServiceProvider
                 ->uncompromised()
             : null,
         );
+    }
+
+    /**
+     * Persist token usage for every AI invocation the SDK reports.
+     */
+    protected function registerAiEventListeners(): void
+    {
+        Event::listen(AgentPrompted::class, RecordAiUsage::class);
+        Event::listen(AgentStreamed::class, RecordAiUsage::class);
     }
 }

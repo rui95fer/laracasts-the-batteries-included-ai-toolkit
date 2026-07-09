@@ -6,7 +6,6 @@ use Laravel\Ai\Attributes\MaxSteps;
 use Laravel\Ai\Attributes\MaxTokens;
 use Laravel\Ai\Attributes\Provider;
 use Laravel\Ai\Attributes\Timeout;
-use Laravel\Ai\Attributes\UseSmartestModel;
 use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Contracts\HasTools;
 use Laravel\Ai\Enums\Lab;
@@ -19,7 +18,6 @@ use Tool;
 #[Provider([
     Lab::OpenAI->value => 'gpt-4o-mini',
 ])]
-#[UseSmartestModel]
 #[MaxTokens(1600)]
 #[MaxSteps(3)]
 #[Timeout(120)]

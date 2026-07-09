@@ -204,6 +204,32 @@ test('triage falls back to the queue when the sync prompt fails', function () {
     TicketTriage::assertQueued(fn ($queued) => str_contains($queued->prompt, 'The provider is timing out.'));
 });
 
+test('successful triage records the invocation id on the run', function () {
+    $user = User::factory()->create();
+    $ticket = Ticket::factory()->for($user)->create();
+    $ticket->messages()->create([
+        'type' => TicketMessageType::CustomerMessage,
+        'body' => 'Please triage this.',
+        'author_name' => $ticket->customer_name,
+        'author_email' => $ticket->customer_email,
+    ]);
+
+    TicketTriage::fake();
+
+    $this->actingAs($user)
+        ->post(route('tickets.ai.triage', $ticket))
+        ->assertRedirect();
+
+    $run = AiRun::query()->where('ticket_id', $ticket->id)->firstOrFail();
+
+    expect($run->invocation_id)->not->toBeNull();
+
+    // The listener should have created a usage row keyed to the same
+    // invocation id, and the action's markRunSucceeded should have
+    // backfilled the ai_run_id on it.
+    expect(AiUsage::query()->where('ai_run_id', $run->id)->exists())->toBeTrue();
+});
+
 test('triage records the actual provider and model that responded', function () {
     $user = User::factory()->create();
     $ticket = Ticket::factory()->for($user)->create();

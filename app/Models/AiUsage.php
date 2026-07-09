@@ -8,7 +8,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * @property int $id
- * @property int $ai_run_id
+ * @property int|null $ai_run_id
+ * @property string|null $invocation_id
  * @property int $prompt_tokens
  * @property int $completion_tokens
  * @property int $total_tokens
@@ -18,6 +19,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  */
 #[Fillable([
     'ai_run_id',
+    'invocation_id',
     'prompt_tokens',
     'completion_tokens',
     'total_tokens',

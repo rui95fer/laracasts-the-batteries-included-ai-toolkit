@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
@@ -19,6 +20,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property string|null $started_at
  * @property string|null $finished_at
  * @property string|null $error
+ * @property string|null $invocation_id
  * @property string|null $output_text
  */
 #[Fillable([
@@ -32,6 +34,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'started_at',
     'finished_at',
     'error',
+    'invocation_id',
     'output_text',
 ])]
 class AiRun extends Model
@@ -42,6 +45,14 @@ class AiRun extends Model
     public function usage(): HasOne
     {
         return $this->hasOne(AiUsage::class);
+    }
+
+    /**
+     * @return HasMany<AiUsage, $this>
+     */
+    public function usages(): HasMany
+    {
+        return $this->hasMany(AiUsage::class);
     }
 
     /**

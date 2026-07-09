@@ -158,19 +158,13 @@ class TriageTicket
             'finished_at' => now(),
             'provider' => $response->meta->provider,
             'model' => $response->meta->model,
+            'invocation_id' => $response->invocationId,
         ]);
 
-        if ($response->usage) {
-            AiUsage::create([
-                'ai_run_id' => $run->id,
-                'prompt_tokens' => $response->usage->promptTokens,
-                'completion_tokens' => $response->usage->completionTokens,
-                'total_tokens' => $response->usage->promptTokens + $response->usage->completionTokens,
-                'cache_write_input_tokens' => $response->usage->cacheWriteInputTokens,
-                'cache_read_input_tokens' => $response->usage->cacheReadInputTokens,
-                'reasoning_tokens' => $response->usage->reasoningTokens,
-            ]);
-        }
+        AiUsage::query()
+            ->where('invocation_id', $response->invocationId)
+            ->whereNull('ai_run_id')
+            ->update(['ai_run_id' => $run->id]);
     }
 
     private function latestMessageId(Ticket $ticket): int

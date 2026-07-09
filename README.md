@@ -1042,3 +1042,144 @@ Course notes from [Laracasts](https://laracasts.com).
   php artisan queue:work
   ```
 
+---
+
+## Episode 10 — Controlling Cost Before It Controls You
+
+- **Link `ai_runs` and `ai_usages` with an `invocation_id` string column instead of a foreign key.** Events fire before a run row exists, so the shared id is what lets a listener correlate a usage record back to its run.
+  ```php
+  Schema::table('ai_runs', function (Blueprint $table) {
+      $table->string('invocation_id')->nullable()->index();
+  });
+
+  Schema::table('ai_usages', function (Blueprint $table) {
+      $table->dropConstrainedForeignId('ai_run_id');
+      $table->string('invocation_id')->nullable()->index();
+  });
+  ```
+
+- **Make the `invocation_id` mass-assignable on both models.** Forgetting it on `AiUsage` silently drops the value when the listener writes the row.
+  ```php
+  class AiRun extends Model
+  {
+      protected $fillable = [
+          'team_id', 'user_id', 'ticket_id', 'feature', 'status',
+          'provider', 'model', 'input_hash', 'invocation_id',
+          'started_at', 'finished_at', 'error', 'output_text',
+      ];
+  }
+
+  class AiUsage extends Model
+  {
+      protected $fillable = [
+          'team_id', 'invocation_id', 'prompt_tokens',
+          'completion_tokens', 'total_tokens', 'cost_usd',
+      ];
+  }
+  ```
+
+- **Listen for `AgentPrompted` to log usage automatically instead of writing it from every controller.** Return early when there is no usage on the response, and again if a row with the same `invocation_id` already exists so retries don't duplicate.
+  ```php
+  use Laravel\Ai\Events\AgentPrompted;
+  use App\Models\AiUsage;
+
+  class RecordAiUsage
+  {
+      public function handle(AgentPrompted $event): void
+      {
+          $usage = $event->response?->usage;
+
+      if (! $usage) {
+          return;
+      }
+
+      if (AiUsage::where('invocation_id', $event->invocationId)->exists()) {
+          return;
+      }
+
+      AiUsage::create([
+          'team_id'           => $event->response->teamId ?? null,
+          'invocation_id'     => $event->invocationId,
+          'prompt_tokens'     => $usage->promptTokens,
+          'completion_tokens' => $usage->completionTokens,
+          'total_tokens'      => $usage->promptTokens + $usage->completionTokens,
+      ]);
+  }
+  ```
+
+- **Read `invocation_id` from the response object so the run row can be linked after the listener fires.** It is a property, not an array key, and the listener will already have used the same id on the usage row.
+  ```php
+  $run->update([
+      'status'        => 'succeeded',
+      'finished_at'   => now(),
+      'invocation_id' => $response->invocationId,
+  ]);
+  ```
+
+- **Wire the listener in a dedicated provider with a `$listen` array.** Laravel auto-registers the provider, so no manual boot is needed.
+  ```php
+  class EventServiceProvider extends ServiceProvider
+  {
+      protected $listen = [
+          AgentPrompted::class => [RecordAiUsage::class],
+      ];
+  }
+  ```
+
+- **Add a daily team token budget to `config/ai.php` so the cap lives in env config, not in code.**
+  ```php
+  // config/ai.php
+  'daily_team_token_budget' => env('DAILY_TEAM_TOKEN_BUDGET', 50_000),
+  ```
+
+- **Enforce the budget in middleware by summing today's `total_tokens` per team.** Return early when there is no team, and 429 with a JSON message when the cap is hit.
+  ```php
+  class EnforceAiBudget
+  {
+      public function handle(Request $request, Closure $next)
+      {
+          $teamId = $request->user()?->current_team_id;
+
+          if (! $teamId) {
+              return $next($request);
+          }
+
+          $tokensToday = AiUsage::where('team_id', $teamId)
+              ->whereDate('created_at', now()->toDateString())
+              ->sum('total_tokens');
+
+          if ($tokensToday >= config('ai.daily_team_token_budget')) {
+              return response()->json(
+                  ['message' => 'Daily AI token budget reached.'],
+                  429
+              );
+          }
+
+          return $next($request);
+      }
+  }
+  ```
+
+- **Register the middleware alias in `bootstrap/app.php` and apply it to AI routes.** One alias keeps the route definition short and the intent readable.
+  ```php
+  ->withMiddleware(function (Middleware $middleware) {
+      $middleware->alias([
+          'ai.budget' => \App\Http\Middleware\EnforceAiBudget::class,
+      ]);
+  })
+  ```
+
+  ```php
+  Route::post('tickets/{ticket}/ai/triage', TicketTriageController::class)
+      ->middleware('ai.budget')
+      ->name('tickets.ai.triage');
+  ```
+
+- **Tier models by task so cheap ones handle the easy jobs and expensive models only run where they earn their cost.** Cost is a first-class requirement, not a tuning step at the end.
+  ```php
+  #[Provider('openai')]
+  #[CheapestModel]   // triage, classification, extraction
+  class TicketTriageAgent { /* ... */ }
+  ```
+
+

@@ -22,6 +22,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Daily User Token Budget
+    |--------------------------------------------------------------------------
+    |
+    | The maximum number of AI tokens a single user is allowed to consume
+    | per calendar day before the AI budget middleware blocks further
+    | requests. Set to 0 or null to disable the cap.
+    |
+    */
+
+    'daily_user_token_budget' => env('AI_DAILY_USER_TOKEN_BUDGET', 50_000),
+
+    /*
+    |--------------------------------------------------------------------------
     | Caching
     |--------------------------------------------------------------------------
     |

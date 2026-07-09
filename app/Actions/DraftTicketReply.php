@@ -9,7 +9,6 @@ use App\Models\Ticket;
 use App\Models\User;
 use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Responses\StreamableAgentResponse;
-use Throwable;
 
 class DraftTicketReply
 {
@@ -23,7 +22,8 @@ class DraftTicketReply
      *
      * The action creates an AiRun, returns the agent's streamable response
      * (which Laravel renders as text/event-stream), and persists the final
-     * streamed text plus token usage via ->then(...) once streaming completes.
+     * streamed text plus the invocation id once streaming completes so the
+     * AI event listener can correlate token usage to this run.
      */
     public function execute(Ticket $ticket, User $user): StreamableAgentResponse
     {
@@ -53,20 +53,14 @@ class DraftTicketReply
                     'output_text' => $streamed->text,
                     'provider' => $streamed->meta->provider,
                     'model' => $streamed->meta->model,
+                    'invocation_id' => $streamed->invocationId,
                 ]);
 
-                if ($streamed->usage) {
-                    AiUsage::create([
-                        'ai_run_id' => $run->id,
-                        'prompt_tokens' => $streamed->usage->promptTokens,
-                        'completion_tokens' => $streamed->usage->completionTokens,
-                        'total_tokens' => $streamed->usage->promptTokens + $streamed->usage->completionTokens,
-                        'cache_write_input_tokens' => $streamed->usage->cacheWriteInputTokens,
-                        'cache_read_input_tokens' => $streamed->usage->cacheReadInputTokens,
-                        'reasoning_tokens' => $streamed->usage->reasoningTokens,
-                    ]);
-                }
-            } catch (Throwable) {
+                AiUsage::query()
+                    ->where('invocation_id', $streamed->invocationId)
+                    ->whereNull('ai_run_id')
+                    ->update(['ai_run_id' => $run->id]);
+            } catch (\Throwable) {
                 // Avoid masking the stream's outcome with persistence errors.
             }
         });

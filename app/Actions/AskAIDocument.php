@@ -59,7 +59,6 @@ class AskAIDocument
         }
 
         $this->markRunSucceeded($run, $response);
-        $this->logUsage($run, $response);
 
         return [
             'answer' => $response->text,
@@ -95,7 +94,6 @@ class AskAIDocument
                 $run = AiRun::query()->findOrFail($runId);
 
                 $this->markRunSucceeded($run, $response);
-                $this->logUsage($run, $response);
                 $run->update(['output_text' => $response->text]);
             })
             ->catch(function (Throwable $e) use ($runId): void {
@@ -115,23 +113,12 @@ class AskAIDocument
             'provider' => $response->meta->provider,
             'model' => $response->meta->model,
             'output_text' => $response->text,
+            'invocation_id' => $response->invocationId,
         ]);
-    }
 
-    private function logUsage(AiRun $run, AgentResponse $response): void
-    {
-        if (! $response->usage) {
-            return;
-        }
-
-        AiUsage::create([
-            'ai_run_id' => $run->id,
-            'prompt_tokens' => $response->usage->promptTokens,
-            'completion_tokens' => $response->usage->completionTokens,
-            'total_tokens' => $response->usage->promptTokens + $response->usage->completionTokens,
-            'cache_write_input_tokens' => $response->usage->cacheWriteInputTokens,
-            'cache_read_input_tokens' => $response->usage->cacheReadInputTokens,
-            'reasoning_tokens' => $response->usage->reasoningTokens,
-        ]);
+        AiUsage::query()
+            ->where('invocation_id', $response->invocationId)
+            ->whereNull('ai_run_id')
+            ->update(['ai_run_id' => $run->id]);
     }
 }

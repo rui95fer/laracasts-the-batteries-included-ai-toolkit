@@ -23,6 +23,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('ai/documents', [AIDocumentQAController::class, 'store'])
         ->name('ai.documents.store');
     Route::post('ai/documents/ask', [AIDocumentQAController::class, 'ask'])
+        ->middleware('ai.budget')
         ->name('ai.documents.ask');
     Route::delete('ai/documents/{document}', [AIDocumentQAController::class, 'destroy'])
         ->name('ai.documents.destroy');
@@ -38,12 +39,15 @@ Route::middleware(['auth', 'verified'])->group(function () {
             ->name('tickets.messages.destroy');
 
         Route::post('tickets/{ticket}/ai/triage', TicketTriageController::class)
+            ->middleware('ai.budget')
             ->name('tickets.ai.triage');
 
         Route::post('tickets/{ticket}/ai/chat', TicketChatController::class)
+            ->middleware('ai.budget')
             ->name('tickets.ai.chat');
 
         Route::post('tickets/{ticket}/ai/draft-reply/stream', TicketDraftReplyStreamController::class)
+            ->middleware('ai.budget')
             ->name('tickets.ai.draft-reply.stream');
     });
 });
