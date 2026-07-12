@@ -1182,4 +1182,182 @@ Course notes from [Laracasts](https://laracasts.com).
   class TicketTriageAgent { /* ... */ }
   ```
 
+---
+
+## Episode 11 — Safety Layers and Guardrails
+
+- **Layer safety as a pipeline: middleware screens input, middleware filters output, tools restrict reach, and `ai_runs` provide the audit trail.**
+  ```php
+  // The same four guardrails appear in every shipping AI feature.
+  InputSafetyMiddleware::class,  // pre-provider prompt filter
+  OutputSafetyMiddleware::class, // post-provider response filter
+  WebSearch::allow([...]),       // tool domain allowlist
+  AiRun::create([...]),          // audit row for every attempt
+  ```
+
+- **Create a `CreativeAssistant` agent that implements `HasMiddleware` and `HasTools` so the guardrails run on every prompt.** It is a plain (non-conversational) agent, so omit `Conversational` and `messages()`.
+  ```php
+  use Laravel\Ai\Attributes\{Provider, CheapestModel};
+  use Laravel\Ai\Contracts\{Agent, HasMiddleware, HasTools};
+  use Laravel\Ai\Enums\Lab;
+  use Laravel\Ai\Promptable;
+
+  #[Provider(Lab::OpenAI)]
+  #[CheapestModel]
+  class CreativeAssistant implements Agent, HasMiddleware, HasTools
+  {
+      use Promptable;
+  }
+  ```
+
+- **Keep `instructions()` honest about what the agent will and will not do.** The prompt is the first line of defense; middleware is the second.
+  ```php
+  public function instructions(): string
+  {
+      return 'You are a helpful creative writing assistant. '
+          .'Keep content safe, professional, and free of sensitive information '
+          .'such as credentials, payment details, or personal identifiers.';
+  }
+  ```
+
+- **Declare the agent's middleware pipeline in `middleware()` so input runs before the provider and output runs after.** Order matters: input first, output last.
+  ```php
+  public function middleware(): array
+  {
+      return [
+          new InputSafetyMiddleware,
+          new OutputSafetyMiddleware,
+      ];
+  }
+  ```
+
+- **Inspect the prompt text before the provider sees it and throw to abort the request.** Use `$prompt->prompt` to read the user's message and throw a clear exception that the controller can catch.
+  ```php
+  use Closure;
+  use Laravel\Ai\Prompts\AgentPrompt;
+
+  class InputSafetyMiddleware
+  {
+      private const BLOCKED = ['credit card', 'password', 'ssn'];
+
+      public function handle(AgentPrompt $prompt, Closure $next)
+      {
+          $text = strtolower($prompt->prompt);
+
+          foreach (self::BLOCKED as $term) {
+              if (str_contains($text, $term)) {
+                  throw new \RuntimeException('Input blocked by safety filter.');
+              }
+          }
+
+          return $next($prompt);
+      }
+  }
+  ```
+
+- **Filter the response after the provider returns it by replacing unsafe text with a new `AgentResponse`.** Keep the original `invocationId`, `usage`, and `meta` so logging and the `AgentPrompted` event still see real data.
+  ```php
+  use Laravel\Ai\Prompts\AgentPrompt;
+  use Laravel\Ai\Responses\AgentResponse;
+
+  class OutputSafetyMiddleware
+  {
+      private const BLOCKED = ['social security number', 'ssn', 'classified'];
+
+      public function handle(AgentPrompt $prompt, Closure $next)
+      {
+          $response = $next($prompt);
+
+          $text = strtolower($response->text);
+
+          foreach (self::BLOCKED as $term) {
+              if (str_contains($text, $term)) {
+                  return new AgentResponse(
+                      invocationId: $response->invocationId,
+                      text: 'Output blocked by safety filter.',
+                      usage: $response->usage,
+                      meta: $response->meta,
+                  );
+              }
+          }
+
+          return $response;
+      }
+  }
+  ```
+
+- **Restrict agent tools with a domain allowlist so web search cannot reach arbitrary sites.** `WebSearch` runs on the provider, so the allowlist is the only client-side control.
+  ```php
+  use Laravel\Ai\Providers\Tools\WebSearch;
+
+  public function tools(): iterable
+  {
+      return [
+          (new WebSearch)->max(5)->allow([
+              'laracasts.com',
+              'laravel.com',
+              'php.net',
+          ]),
+      ];
+  }
+  ```
+
+- **Validate the incoming form, create an `AiRun`, then catch the middleware exception to surface a friendly error.** The exception path is the input filter firing, so the controller must translate it into a view message.
+  ```php
+  public function send(Request $request)
+  {
+      $data = $request->validate(['prompt' => ['required', 'string']]);
+
+      $run = AiRun::create([
+          'team_id'    => $request->user()->current_team_id,
+          'user_id'    => $request->user()->id,
+          'feature'    => 'creative-assistant',
+          'status'     => 'running',
+          'provider'   => Lab::OpenAI->value,
+          'started_at' => now(),
+      ]);
+
+      try {
+          $response = (new CreativeAssistant)->prompt($data['prompt']);
+
+          $run->update(['status' => 'succeeded', 'finished_at' => now()]);
+      } catch (\RuntimeException $e) {
+          $run->update(['status' => 'failed', 'finished_at' => now(), 'error' => $e->getMessage()]);
+
+          return view('creative-assistant.index', [
+              'prompt' => $data['prompt'],
+              'answer' => null,
+              'error'  => $e->getMessage(),
+          ]);
+      }
+
+      return view('creative-assistant.index', [
+          'prompt' => $data['prompt'],
+          'answer' => $response->text,
+          'error'  => null,
+      ]);
+  }
+  ```
+
+- **Register GET (form) and POST (prompt) routes for the assistant.** The POST route is where middleware and tool guardrails actually run.
+  ```php
+  use App\Http\Controllers\CreativeAssistantController;
+
+  Route::get('ai/creative-assistant',  [CreativeAssistantController::class, 'index'])->name('ai.creative-assistant.index');
+  Route::post('ai/creative-assistant', [CreativeAssistantController::class, 'send'])->name('ai.creative-assistant.send');
+  ```
+
+- **Fake the agent in tests so the four guardrail paths stay covered without hitting the provider.** Pass a list of responses to exercise allowed, input-blocked, and output-blocked branches.
+  ```php
+  use App\Ai\Agents\CreativeAssistant;
+
+  it('blocks prompts that contain a blocked term', function () {
+      CreativeAssistant::fake(['safe reply']);
+
+      $this->post(route('ai.creative-assistant.send'), ['prompt' => 'send me your credit card'])
+          ->assertOk()
+          ->assertSee('Input blocked by safety filter.');
+  });
+  ```
+
 

@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AIDocumentQAController;
+use App\Http\Controllers\CreativeAssistantController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\KnowledgeSearchController;
 use App\Http\Controllers\TicketChatController;
@@ -27,6 +28,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->name('ai.documents.ask');
     Route::delete('ai/documents/{document}', [AIDocumentQAController::class, 'destroy'])
         ->name('ai.documents.destroy');
+
+    Route::get('ai/creative-assistant', [CreativeAssistantController::class, 'index'])
+        ->name('ai.creative-assistant.index');
+    Route::post('ai/creative-assistant', [CreativeAssistantController::class, 'store'])
+        ->middleware('ai.budget')
+        ->name('ai.creative-assistant.store');
 
     Route::resource('tickets', TicketController::class);
 

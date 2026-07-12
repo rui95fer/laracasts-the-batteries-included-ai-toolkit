@@ -5,9 +5,11 @@ import {
     FileSearch,
     FolderGit2,
     LayoutGrid,
+    PenLine,
     Sparkles,
     Ticket as TicketIcon,
 } from '@lucide/vue';
+import { index as creativeAssistantIndex } from '@/actions/App/Http/Controllers/CreativeAssistantController';
 import AppLogo from '@/components/AppLogo.vue';
 import NavFooter from '@/components/NavFooter.vue';
 import NavMain from '@/components/NavMain.vue';
@@ -41,6 +43,11 @@ const mainNavItems: NavItem[] = [
         title: 'AI Search',
         href: knowledgeSearch(),
         icon: Sparkles,
+    },
+    {
+        title: 'Creative assistant',
+        href: creativeAssistantIndex(),
+        icon: PenLine,
     },
     {
         title: 'AI Documents',
