@@ -1417,4 +1417,138 @@ Course notes from [Laracasts](https://laracasts.com).
   expect($file->id)->not->toBeEmpty();
   ```
 
+---
+
+## Episode 13 — Exposing Your AI Features with MCP
+
+- **Use MCP to expose your app's AI features to external agents without building a custom API for every integration.** Laravel Boost is a separate tool that improves your internal AI-assisted development workflow, so install it only when you actually use AI agents.
+  ```bash
+  composer require laravel/mcp
+  composer require laravel/boost --dev
+  ```
+
+- **Scaffold an MCP server with `make:mcp-server` to act as the single entry point that external agents connect to.** Servers live in `app/Mcp/Servers` and expose tools, resources, and prompts from one class.
+  ```bash
+  php artisan make:mcp-server SupportDeskServer
+  ```
+
+- **Scaffold an MCP tool with `make:mcp-tool` and wrap an existing agent so its capability is callable by external models.** Keep the name honest about what the tool actually does — `TriageTicketTool` is clearer than `TriageTicket` because the suffix signals it's a tool wrapper.
+  ```bash
+  php artisan make:mcp-tool TriageTicketTool
+  ```
+
+- **Declare the tool's input contract in `schema()` so the model only sees well-typed, validated arguments.** Constrain the range so a `0` or negative ID is impossible, because IDs are positive by definition.
+  ```php
+  use Illuminate\Contracts\JsonSchema\JsonSchema;
+
+  public function schema(JsonSchema $schema): array
+  {
+      return [
+          'ticketId' => $schema->integer()->min(1)->required(),
+      ];
+  }
+  ```
+
+- **Validate the incoming request with `$request->validate()` like a normal HTTP request — Laravel MCP's `Request` mimics the familiar API inside a tool.** Mirror the same constraints the JSON schema enforces so the error message matches what the model expects.
+  ```php
+  $data = $request->validate([
+      'ticketId' => ['required', 'integer', 'min:1'],
+  ]);
+  ```
+
+- **Translate the agent's response into a `Response::structured()` payload instead of returning the raw `AgentResponse`.** The structured form gives AI clients parseable data while still rendering a JSON-encoded text representation for backward compatibility.
+  ```php
+  use App\Models\Ticket;
+  use Laravel\Mcp\Response;
+  use App\Actions\TriageTicket;
+
+  $ticket = Ticket::findOrFail($data['ticketId']);
+  $response = (new TriageTicket)->execute($ticket);
+
+  return Response::structured([
+      'priority'   => $response->priority,
+      'department' => $response->department,
+      'sentiment'  => $response->sentiment,
+      'tags'       => $response->tags,
+      'summary'    => $response->summary,
+  ]);
+  ```
+
+- **Register each tool on the server's `$tools` array — the server, not the tool, owns the list of exposed capabilities.** One line per tool keeps the surface area auditable.
+  ```php
+  use App\Mcp\Tools\TriageTicketTool;
+  use Laravel\Mcp\Server;
+
+  class SupportDeskServer extends Server
+  {
+      protected array $tools = [
+          TriageTicketTool::class,
+      ];
+  }
+  ```
+
+- **Register the server on a dedicated route file (`routes/ai.php`) so MCP wiring stays separate from the rest of your web routes.** Pick a path that won't collide with existing routes — `/mcp` is fine if nothing else uses it.
+  ```php
+  use App\Mcp\Servers\SupportDeskServer;
+  use Laravel\Mcp\Facades\Mcp;
+
+  Mcp::web('/mcp', SupportDeskServer::class);
+  ```
+
+- **Test the server end-to-end with the built-in MCP Inspector before wiring up an external client.** It launches a web UI that lists your tools, lets you call them, and shows the raw request/response.
+  ```bash
+  php artisan mcp:inspector /mcp
+  ```
+
+- **If the Inspector returns a CSRF mismatch, exempt the MCP path via `preventRequestForgery()` in `bootstrap/app.php` because the inspector doesn't carry a session token.** The Laravel MCP `Request` runs through the same middleware stack, so it needs the same exemption as any other tokenless API.
+  ```php
+  ->withMiddleware(function (Middleware $middleware): void {
+      $middleware->preventRequestForgery(except: ['mcp/*']);
+  })
+  ```
+
+- **Add `description()` to a tool so the Inspector (and external agents) can show humans what the tool does.** The text becomes the tooltip and is what an LLM uses to decide when to call the tool.
+  ```php
+  public function description(): string
+  {
+      return 'Triages a support ticket and returns priority, department, sentiment, tags, and a summary.';
+  }
+  ```
+
+- **For production deployments, protect the MCP route with Sanctum so only authorized agents can call your tools.** The CSRF exemption stays, but add a bearer-token middleware to gate access.
+  ```php
+  Mcp::web('/mcp', SupportDeskServer::class)
+      ->middleware('auth:sanctum');
+  ```
+
+- **Install Boost with `boost:install` when you want AI coding agents (Claude Code, Codex, etc.) to follow Laravel-aware rules.** The installer is interactive: pick `guidelines`, `skills`, and/or MCP depending on what you need, then choose which agents to configure.
+  ```bash
+  composer require laravel/boost --dev
+  php artisan boost:install
+  ```
+
+- **Customize which Boost features to install — `guidelines`, `skills`, and `MCP` are independent toggles.** For a team that just wants the LLM to follow Laravel conventions, `guidelines` alone is enough.
+  ```bash
+  php artisan boost:install
+  # Prompts: guidelines, skills, MCP — pick "guidelines" only.
+  ```
+
+- **Pick which third-party package skills Boost should install (e.g. `laravel-ai`) so the agent has the right context for the packages in your `composer.json`.** Skills are loaded on-demand, so only enable the ones you actually use.
+  ```bash
+  # During boost:install, choose "Laravel AI" to install the ai-sdk skill.
+  ```
+
+- **Choose which AI agents Boost should write configuration files for (Claude Code, Codex, Cursor, Junie, etc.).** The installer writes per-agent config and the matching guideline file (e.g. `AGENTS.md`) at the project root.
+  ```bash
+  # During boost:install, tick "Claude Code" and "Codex" to wire both.
+  ```
+
+- **Read the generated `AGENTS.md` to understand the rules Boost is feeding to your AI agent.** It includes the Laravel Boost guidelines, foundation context (PHP/Laravel versions), and skills available in the project.
+  ```md
+  # Snippet you'll see at the top of AGENTS.md
+  - laravel/ai (AI) - v0
+  - laravel/framework (LARAVEL) - v13
+  - laravel/mcp (MCP) - v0
+  ```
+
 
