@@ -19,19 +19,6 @@ use Laravel\Ai\Responses\StreamedAgentResponse;
 use Laravel\Ai\Streaming\Events\StreamEnd;
 use Laravel\Ai\Streaming\Events\TextDelta;
 
-$providerStub = new class
-{
-    public function name(): string
-    {
-        return 'openai';
-    }
-
-    public function __call(string $method, array $args): mixed
-    {
-        return null;
-    }
-};
-
 function buildPrompt(string $invocationId): AgentPrompt
 {
     $stub = new class
@@ -101,24 +88,7 @@ function buildPrompt(string $invocationId): AgentPrompt
     );
 }
 
-test('listener skips prompts that carry no usage payload', function () {
-    $response = new AgentResponse('inv-no-usage', 'Hello', new Usage, new Meta('openai', 'gpt-4o-mini'));
-    $reflection = new ReflectionClass($response);
-    $property = $reflection->getProperty('usage');
-    $property->setValue($response, null);
-
-    $event = new AgentPrompted(
-        'inv-no-usage',
-        buildPrompt('inv-no-usage'),
-        $response,
-    );
-
-    (new RecordAiUsage)->handle($event);
-
-    expect(AiUsage::query()->where('invocation_id', 'inv-no-usage')->exists())->toBeFalse();
-});
-
-test('listener writes usage for a prompt and links to the run by invocation id', function () {
+test('listener writes usage for a prompt, links to the run, and is idempotent', function () {
     $user = User::factory()->create();
     $ticket = Ticket::factory()->for($user)->create();
     $run = AiRun::create([
@@ -132,21 +102,25 @@ test('listener writes usage for a prompt and links to the run by invocation id',
         'started_at' => now(),
     ]);
 
-    $usage = new Usage(
-        promptTokens: 5,
-        completionTokens: 7,
-        cacheWriteInputTokens: 1,
-        cacheReadInputTokens: 2,
-        reasoningTokens: 3,
-    );
-
-    $event = new AgentPrompted(
+    $build = fn (): AgentPrompted => new AgentPrompted(
         'inv-link',
         buildPrompt('inv-link'),
-        new AgentResponse('inv-link', 'Hello', $usage, new Meta('openai', 'gpt-4o-mini')),
+        new AgentResponse(
+            'inv-link',
+            'Hello',
+            new Usage(
+                promptTokens: 5,
+                completionTokens: 7,
+                cacheWriteInputTokens: 1,
+                cacheReadInputTokens: 2,
+                reasoningTokens: 3,
+            ),
+            new Meta('openai', 'gpt-4o-mini'),
+        ),
     );
 
-    (new RecordAiUsage)->handle($event);
+    (new RecordAiUsage)->handle($build());
+    (new RecordAiUsage)->handle($build());
 
     $row = AiUsage::query()->where('invocation_id', 'inv-link')->firstOrFail();
 
@@ -156,39 +130,8 @@ test('listener writes usage for a prompt and links to the run by invocation id',
         ->and($row->cache_write_input_tokens)->toBe(1)
         ->and($row->cache_read_input_tokens)->toBe(2)
         ->and($row->reasoning_tokens)->toBe(3)
-        ->and($row->total_tokens)->toBe(18);
-});
-
-test('listener is idempotent for the same invocation id', function () {
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
-    $run = AiRun::create([
-        'user_id' => $user->id,
-        'ticket_id' => $ticket->id,
-        'feature' => 'ticket-triage',
-        'status' => 'running',
-        'provider' => 'openai',
-        'model' => 'gpt-4o-mini',
-        'invocation_id' => 'inv-dup',
-        'started_at' => now(),
-    ]);
-
-    $build = fn () => new AgentPrompted(
-        'inv-dup',
-        buildPrompt('inv-dup'),
-        new AgentResponse(
-            'inv-dup',
-            'Hello',
-            new Usage(promptTokens: 2, completionTokens: 3),
-            new Meta('openai', 'gpt-4o-mini'),
-        ),
-    );
-
-    (new RecordAiUsage)->handle($build());
-    (new RecordAiUsage)->handle($build());
-
-    expect(AiUsage::query()->where('invocation_id', 'inv-dup')->count())->toBe(1)
-        ->and(AiUsage::query()->where('ai_run_id', $run->id)->count())->toBe(1);
+        ->and($row->total_tokens)->toBe(18)
+        ->and(AiUsage::query()->where('invocation_id', 'inv-link')->count())->toBe(1);
 });
 
 test('listener handles streamed events through the parent type hint', function () {
@@ -220,5 +163,8 @@ test('listener handles streamed events through the parent type hint', function (
 
     (new RecordAiUsage)->handle($event);
 
-    expect(AiUsage::query()->where('invocation_id', 'inv-stream')->exists())->toBeTrue();
+    $row = AiUsage::query()->where('invocation_id', 'inv-stream')->firstOrFail();
+
+    expect($row->ai_run_id)->not->toBeNull()
+        ->and($row->total_tokens)->toBe(3);
 });

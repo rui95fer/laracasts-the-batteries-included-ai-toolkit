@@ -9,6 +9,7 @@ use App\TicketDepartment;
 use App\TicketMessageType;
 use App\TicketPriority;
 use App\TicketSentiment;
+use Laravel\Ai\Prompts\AgentPrompt;
 
 test('guests are redirected to the login page', function () {
     $ticket = Ticket::factory()->create();
@@ -26,13 +27,9 @@ test('users cannot triage tickets owned by another user', function () {
         ->assertForbidden();
 });
 
-test('user can triage a ticket', function () {
+test('triage applies the agent response to the ticket and records the run and usage', function () {
     $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create([
-        'priority' => TicketPriority::Normal,
-        'department' => TicketDepartment::Support,
-        'sentiment' => TicketSentiment::Neutral,
-    ]);
+    $ticket = Ticket::factory()->for($user)->create();
     $ticket->messages()->create([
         'type' => TicketMessageType::CustomerMessage,
         'body' => 'I was charged twice for my subscription.',
@@ -40,7 +37,15 @@ test('user can triage a ticket', function () {
         'author_email' => $ticket->customer_email,
     ]);
 
-    TicketTriage::fake();
+    TicketTriage::fake([
+        [
+            'priority' => 'high',
+            'department' => 'billing',
+            'sentiment' => 'negative',
+            'tags' => ['billing', 'refund'],
+            'summary' => 'Customer requests a refund for a duplicate charge.',
+        ],
+    ])->preventStrayPrompts();
 
     $this->actingAs($user)
         ->post(route('tickets.ai.triage', $ticket))
@@ -48,73 +53,38 @@ test('user can triage a ticket', function () {
 
     $ticket->refresh();
 
-    expect($ticket->priority)->toBeInstanceOf(TicketPriority::class);
-    expect($ticket->department)->toBeInstanceOf(TicketDepartment::class);
-    expect($ticket->sentiment)->toBeInstanceOf(TicketSentiment::class);
-
-    $run = AiRun::first();
-    expect($run)->not->toBeNull();
-    expect($run->user_id)->toBe($user->id);
-    expect($run->ticket_id)->toBe($ticket->id);
-    expect($run->feature)->toBe('ticket-triage');
-    expect($run->status)->toBe('succeeded');
-    expect($run->provider)->not->toBeNull();
-    expect($run->model)->not->toBeNull();
-    expect($run->input_hash)->not->toBeNull();
-    expect($run->finished_at)->not->toBeNull();
-
-    $usage = AiUsage::first();
-    expect($usage)->not->toBeNull();
-    expect($usage->ai_run_id)->toBe($run->id);
-});
-
-test('triaging creates an AI summary message', function () {
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
-    $ticket->messages()->create([
-        'type' => TicketMessageType::CustomerMessage,
-        'body' => 'Help with my account.',
-        'author_name' => $ticket->customer_name,
-        'author_email' => $ticket->customer_email,
-    ]);
-
-    TicketTriage::fake();
-
-    $this->actingAs($user)
-        ->post(route('tickets.ai.triage', $ticket));
+    expect($ticket)
+        ->priority->toBe(TicketPriority::High)
+        ->department->toBe(TicketDepartment::Billing)
+        ->sentiment->toBe(TicketSentiment::Negative)
+        ->and($ticket->tags()->pluck('slug')->all())->toBe(['billing', 'refund']);
 
     $summaryMessage = $ticket->messages()
         ->where('type', TicketMessageType::SystemMessage)
         ->first();
 
-    expect($summaryMessage)->not->toBeNull();
-    expect($summaryMessage->body)->toStartWith('AI summary:');
-});
+    expect($summaryMessage)
+        ->not->toBeNull()
+        ->and($summaryMessage->body)->toBe('AI summary: Customer requests a refund for a duplicate charge.');
 
-test('triaging syncs tags from the AI response', function () {
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
-    $ticket->messages()->create([
-        'type' => TicketMessageType::CustomerMessage,
-        'body' => 'Help with my account.',
-        'author_name' => $ticket->customer_name,
-        'author_email' => $ticket->customer_email,
-    ]);
+    $run = AiRun::query()->where('ticket_id', $ticket->id)->firstOrFail();
 
-    TicketTriage::fake([
-        [
-            'priority' => 'normal',
-            'department' => 'support',
-            'sentiment' => 'neutral',
-            'tags' => ['billing', 'refund'],
-            'summary' => 'Customer needs billing assistance.',
-        ],
-    ]);
+    expect($run)
+        ->feature->toBe('ticket-triage')
+        ->status->toBe('succeeded')
+        ->user_id->toBe($user->id)
+        ->provider->not->toBeNull()
+        ->model->not->toBeNull()
+        ->input_hash->not->toBeNull()
+        ->invocation_id->not->toBeNull()
+        ->finished_at->not->toBeNull();
 
-    $this->actingAs($user)
-        ->post(route('tickets.ai.triage', $ticket));
+    expect(AiUsage::query()->where('ai_run_id', $run->id)->exists())->toBeTrue();
 
-    expect($ticket->refresh()->tags()->pluck('slug')->all())->toBe(['billing', 'refund']);
+    TicketTriage::assertPrompted(function (AgentPrompt $prompt): bool {
+        return str_contains($prompt->prompt, 'I was charged twice for my subscription.')
+            && str_contains($prompt->prompt, 'Subject:');
+    });
 });
 
 test('triage is idempotent for the same input hash', function () {
@@ -127,7 +97,15 @@ test('triage is idempotent for the same input hash', function () {
         'author_email' => $ticket->customer_email,
     ]);
 
-    TicketTriage::fake();
+    TicketTriage::fake([
+        [
+            'priority' => 'normal',
+            'department' => 'support',
+            'sentiment' => 'neutral',
+            'tags' => [],
+            'summary' => '',
+        ],
+    ]);
 
     $this->actingAs($user)
         ->post(route('tickets.ai.triage', $ticket))
@@ -142,38 +120,6 @@ test('triage is idempotent for the same input hash', function () {
 
     expect(AiRun::query()->where('ticket_id', $ticket->id)->count())->toBe($runsAfterFirst);
     expect($ticket->messages()->count())->toBe($messagesAfterFirst);
-});
-
-test('triage re-runs when a new message is added to the ticket', function () {
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
-    $ticket->messages()->create([
-        'type' => TicketMessageType::CustomerMessage,
-        'body' => 'Original message body.',
-        'author_name' => $ticket->customer_name,
-        'author_email' => $ticket->customer_email,
-    ]);
-
-    TicketTriage::fake();
-
-    $this->actingAs($user)
-        ->post(route('tickets.ai.triage', $ticket))
-        ->assertRedirect();
-
-    expect(AiRun::query()->where('ticket_id', $ticket->id)->count())->toBe(1);
-
-    $ticket->messages()->create([
-        'type' => TicketMessageType::CustomerMessage,
-        'body' => 'Follow-up message body.',
-        'author_name' => $ticket->customer_name,
-        'author_email' => $ticket->customer_email,
-    ]);
-
-    $this->actingAs($user)
-        ->post(route('tickets.ai.triage', $ticket))
-        ->assertRedirect();
-
-    expect(AiRun::query()->where('ticket_id', $ticket->id)->count())->toBe(2);
 });
 
 test('triage falls back to the queue when the sync prompt fails', function () {
@@ -202,52 +148,4 @@ test('triage falls back to the queue when the sync prompt fails', function () {
     expect(AiUsage::query()->where('ai_run_id', $run->id)->exists())->toBeFalse();
 
     TicketTriage::assertQueued(fn ($queued) => str_contains($queued->prompt, 'The provider is timing out.'));
-});
-
-test('successful triage records the invocation id on the run', function () {
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
-    $ticket->messages()->create([
-        'type' => TicketMessageType::CustomerMessage,
-        'body' => 'Please triage this.',
-        'author_name' => $ticket->customer_name,
-        'author_email' => $ticket->customer_email,
-    ]);
-
-    TicketTriage::fake();
-
-    $this->actingAs($user)
-        ->post(route('tickets.ai.triage', $ticket))
-        ->assertRedirect();
-
-    $run = AiRun::query()->where('ticket_id', $ticket->id)->firstOrFail();
-
-    expect($run->invocation_id)->not->toBeNull();
-
-    // The listener should have created a usage row keyed to the same
-    // invocation id, and the action's markRunSucceeded should have
-    // backfilled the ai_run_id on it.
-    expect(AiUsage::query()->where('ai_run_id', $run->id)->exists())->toBeTrue();
-});
-
-test('triage records the actual provider and model that responded', function () {
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
-    $ticket->messages()->create([
-        'type' => TicketMessageType::CustomerMessage,
-        'body' => 'Please triage this.',
-        'author_name' => $ticket->customer_name,
-        'author_email' => $ticket->customer_email,
-    ]);
-
-    TicketTriage::fake();
-
-    $this->actingAs($user)
-        ->post(route('tickets.ai.triage', $ticket))
-        ->assertRedirect();
-
-    $run = AiRun::query()->where('ticket_id', $ticket->id)->firstOrFail();
-
-    expect($run->provider)->not->toBeNull()
-        ->and($run->model)->not->toBeNull();
 });

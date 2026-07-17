@@ -1360,4 +1360,61 @@ Course notes from [Laracasts](https://laracasts.com).
   });
   ```
 
+---
+
+## Episode 12 — Testing AI Features Without Hitting the API
+
+- **Call `Agent::fake()` before prompting to swap the real provider with a fake gateway.** Tests stay fast, deterministic, and cost nothing.
+  ```php
+  TicketTriage::fake();
+  ```
+
+- **Pass structured data to `fake()` to control exactly what a `HasStructuredOutput` agent returns.**
+  ```php
+  TicketTriage::fake([
+      [
+          'priority' => 'high',
+          'department' => 'billing',
+          'sentiment' => 'negative',
+          'tags' => ['refund'],
+          'summary' => 'Customer requests a refund.',
+      ],
+  ]);
+
+  $response = (new TicketTriage)->prompt('Subject: Refund request');
+
+  expect($response['priority'])->toBe('high');
+  ```
+
+- **Chain `preventStrayPrompts()` to make the fake gateway strict.** Any prompt without a matching fake response immediately fails.
+  ```php
+  TicketTriage::fake()->preventStrayPrompts();
+  ```
+
+- **Assert the agent received the expected prompt using `assertPrompted()`.**
+  ```php
+  TicketTriage::assertPrompted(fn ($prompt) => str_contains($prompt, 'Refund'));
+  ```
+
+- **Fake embeddings with `Embeddings::fake()` and guard against unmocked calls with `preventStrayEmbeddings()`.**
+  ```php
+  Embeddings::fake()->preventStrayEmbeddings();
+
+  $response = Embeddings::for(['refund policy'])->generate();
+
+  expect($response->embeddings[0])->toBeArray();
+  ```
+
+- **Fake file and vector store operations with `Files::fake()` and `Stores::fake()`.** Chain `preventStrayOperations()` to catch any unmocked operation.
+  ```php
+  Files::fake()->preventStrayOperations();
+  Stores::fake()->preventStrayOperations();
+
+  $file = Document::fromPath('refund-policy.pdf')->put();
+  $store = Stores::get('store-id');
+  $store->add($file->id);
+
+  expect($file->id)->not->toBeEmpty();
+  ```
+
 

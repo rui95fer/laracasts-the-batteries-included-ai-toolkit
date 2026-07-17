@@ -7,6 +7,7 @@ use App\Models\Ticket;
 use App\Models\User;
 use App\TicketMessageType;
 use Illuminate\Support\Facades\DB;
+use Laravel\Ai\Prompts\AgentPrompt;
 
 test('guests are redirected to the login page', function () {
     $ticket = Ticket::factory()->create();
@@ -24,7 +25,7 @@ test('users cannot stream a draft reply on tickets owned by another user', funct
         ->assertForbidden();
 });
 
-test('streaming a draft reply emits text deltas and persists the run', function () {
+test('streaming a draft reply emits text deltas, persists the run, and avoids side effects', function () {
     $user = User::factory()->create();
     $ticket = Ticket::factory()->for($user)->create();
     $ticket->messages()->create([
@@ -60,21 +61,12 @@ test('streaming a draft reply emits text deltas and persists the run', function 
         ->output_text->toBe('Thanks for reaching out! Our team will look into it.');
 
     expect(AiUsage::query()->where('ai_run_id', $run->id)->exists())->toBeTrue();
-});
 
-test('streaming a draft reply does not create ticket messages or save chat memory', function () {
-    config(['ai.conversations.generate_title' => false]);
+    TicketAssistant::assertPrompted(function (AgentPrompt $prompt): bool {
+        return $prompt->prompt === 'Draft a concise, friendly reply to the most recent customer message.';
+    });
 
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
-
-    TicketAssistant::fake(['Drafted reply text.']);
-
-    $this->actingAs($user)
-        ->post(route('tickets.ai.draft-reply.stream', $ticket))
-        ->assertOk();
-
-    expect($ticket->messages()->count())->toBe(0);
+    expect($ticket->messages()->count())->toBe(1);
     expect($ticket->refresh()->ai_conversation_id)->toBeNull();
 
     $conversationsTable = config('ai.conversations.tables.conversations', 'agent_conversations');

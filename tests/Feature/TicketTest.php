@@ -1,5 +1,6 @@
 <?php
 
+use App\Ai\Agents\TicketAssistant;
 use App\Ai\Agents\TicketTriage;
 use App\Models\AiRun;
 use App\Models\AiUsage;
@@ -134,26 +135,15 @@ test('users cannot access tickets owned by another user', function () {
         ->assertForbidden();
 });
 
-test('deleting a ticket removes messages and tag links but keeps reusable tags', function () {
+test('deleting a ticket removes messages, tag links, ai runs, and chat conversation memory', function () {
+    config(['ai.conversations.generate_title' => false]);
+
     $user = User::factory()->create();
     $ticket = Ticket::factory()->for($user)->create();
     $message = TicketMessage::factory()->for($ticket)->create();
     $tag = Tag::factory()->create();
     $ticket->tags()->attach($tag);
 
-    $this->actingAs($user)
-        ->delete(route('tickets.destroy', $ticket))
-        ->assertRedirect(route('tickets.index'));
-
-    $this->assertModelMissing($ticket);
-    $this->assertModelMissing($message);
-    $this->assertModelExists($tag);
-    expect(DB::table('tag_ticket')->count())->toBe(0);
-});
-
-test('deleting a triaged ticket cascades to its ai runs and usage records', function () {
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
     $ticket->messages()->create([
         'type' => TicketMessageType::CustomerMessage,
         'body' => 'Help with billing.',
@@ -162,22 +152,38 @@ test('deleting a triaged ticket cascades to its ai runs and usage records', func
     ]);
 
     TicketTriage::fake();
+    TicketAssistant::fake(['Reply.']);
 
     $this->actingAs($user)
         ->post(route('tickets.ai.triage', $ticket))
         ->assertRedirect();
 
+    $this->actingAs($user)
+        ->post(route('tickets.ai.chat', $ticket), ['message' => 'Hello.'])
+        ->assertRedirect();
+
     $run = AiRun::query()->where('ticket_id', $ticket->id)->firstOrFail();
     $usage = AiUsage::query()->where('ai_run_id', $run->id)->firstOrFail();
+    $conversationId = $ticket->refresh()->ai_conversation_id;
 
-    expect($run->exists)->toBeTrue();
-    expect($usage->exists)->toBeTrue();
+    $messagesTable = config('ai.conversations.tables.messages', 'agent_conversation_messages');
+    $conversationsTable = config('ai.conversations.tables.conversations', 'agent_conversations');
+
+    expect($conversationId)->not->toBeNull();
+    expect(DB::table($messagesTable)->where('conversation_id', $conversationId)->count())->toBeGreaterThan(0);
+    expect(DB::table($conversationsTable)->where('id', $conversationId)->exists())->toBeTrue();
 
     $this->actingAs($user)
         ->delete(route('tickets.destroy', $ticket))
         ->assertRedirect(route('tickets.index'));
 
     $this->assertModelMissing($ticket);
+    $this->assertModelMissing($message);
+    $this->assertModelExists($tag);
     $this->assertModelMissing($run);
     $this->assertModelMissing($usage);
+
+    expect(DB::table('tag_ticket')->count())->toBe(0);
+    expect(DB::table($messagesTable)->where('conversation_id', $conversationId)->count())->toBe(0);
+    expect(DB::table($conversationsTable)->where('id', $conversationId)->exists())->toBeFalse();
 });

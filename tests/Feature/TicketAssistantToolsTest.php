@@ -41,45 +41,30 @@ test('ticket facts tool refuses to expose tickets the user cannot view', functio
     expect($output)->toBe('unauthorized');
 });
 
-test('ticket messages tool returns the most recent messages in chronological order', function () {
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
-
-    $ticket->messages()->createMany([
-        ['type' => TicketMessageType::CustomerMessage, 'body' => 'First',  'author_name' => 'C', 'author_email' => 'c@x.test'],
-        ['type' => TicketMessageType::AgentReply,     'body' => 'Second', 'author_name' => 'A', 'author_email' => 'a@x.test'],
-        ['type' => TicketMessageType::CustomerMessage, 'body' => 'Third',  'author_name' => 'C', 'author_email' => 'c@x.test'],
-    ]);
-
-    $output = (new TicketMessagesTool($ticket->id, $user))->handle(new Request(['count' => 2]));
-
-    $messages = json_decode($output, true);
-
-    expect($messages)
-        ->toBeArray()
-        ->toHaveCount(2)
-        ->and($messages[0]['body'])->toBe('Second')
-        ->and($messages[1]['body'])->toBe('Third');
-});
-
-test('ticket messages tool clamps the count to the schema range', function () {
+test('ticket messages tool returns messages in chronological order and clamps count to the schema range', function () {
     $user = User::factory()->create();
     $ticket = Ticket::factory()->for($user)->create();
 
     $ticket->messages()->createMany(
-        collect(range(1, 6))->map(fn (): array => [
+        collect(range(1, 8))->map(fn (int $i): array => [
             'type' => TicketMessageType::CustomerMessage,
-            'body' => 'm',
+            'body' => "Message {$i}",
             'author_name' => 'C',
             'author_email' => 'c@x.test',
         ])->all()
     );
 
-    $output = (new TicketMessagesTool($ticket->id, $user))->handle(new Request(['count' => 99]));
+    $within = json_decode((new TicketMessagesTool($ticket->id, $user))->handle(new Request(['count' => 3])), true);
+    $clamped = json_decode((new TicketMessagesTool($ticket->id, $user))->handle(new Request(['count' => 99])), true);
 
-    $messages = json_decode($output, true);
-
-    expect($messages)->toHaveCount(5);
+    expect($within)
+        ->toHaveCount(3)
+        ->and($within[0]['body'])->toBe('Message 6')
+        ->and($within[1]['body'])->toBe('Message 7')
+        ->and($within[2]['body'])->toBe('Message 8')
+        ->and($clamped)->toHaveCount(5)
+        ->and($clamped[0]['body'])->toBe('Message 4')
+        ->and($clamped[4]['body'])->toBe('Message 8');
 });
 
 test('ticket messages tool refuses to expose tickets the user cannot view', function () {

@@ -6,7 +6,7 @@ use App\Models\AiUsage;
 use App\Models\Ticket;
 use App\Models\User;
 use App\TicketMessageType;
-use Illuminate\Support\Facades\DB;
+use Laravel\Ai\Prompts\AgentPrompt;
 
 test('guests are redirected to the login page', function () {
     $ticket = Ticket::factory()->create();
@@ -27,51 +27,7 @@ test('users cannot chat on tickets owned by another user', function () {
         ->assertForbidden();
 });
 
-test('user can chat with the assistant and a conversation id is stored', function () {
-    config(['ai.conversations.generate_title' => false]);
-
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
-
-    TicketAssistant::fake(['AI response text.']);
-
-    $this->actingAs($user)
-        ->post(route('tickets.ai.chat', $ticket), [
-            'message' => 'Can you summarise this ticket?',
-        ])
-        ->assertRedirect();
-
-    $ticket->refresh();
-
-    expect($ticket->ai_conversation_id)->not->toBeNull();
-
-    $run = AiRun::query()->where('ticket_id', $ticket->id)->firstOrFail();
-    expect($run->feature)->toBe('ticket-chat')
-        ->and($run->status)->toBe('succeeded')
-        ->and($run->user_id)->toBe($user->id)
-        ->and($run->finished_at)->not->toBeNull()
-        ->and($run->input_hash)->not->toBeNull();
-
-    expect(AiUsage::query()->where('ai_run_id', $run->id)->exists())->toBeTrue();
-
-    $promptMessage = $ticket->messages()
-        ->where('type', TicketMessageType::SystemMessage)
-        ->where('body', 'AI chat prompt: Can you summarise this ticket?')
-        ->first();
-
-    expect($promptMessage)->not->toBeNull()
-        ->and($promptMessage->author_name)->toBe($user->name);
-
-    $replyMessage = $ticket->messages()
-        ->where('type', TicketMessageType::SystemMessage)
-        ->where('body', 'AI chat reply: AI response text.')
-        ->first();
-
-    expect($replyMessage)->not->toBeNull()
-        ->and($replyMessage->author_name)->toBe('AI Assistant');
-});
-
-test('a follow up chat on the same ticket reuses the conversation id', function () {
+test('user can chat with the assistant and follow up on the same conversation', function () {
     config(['ai.conversations.generate_title' => false]);
 
     $user = User::factory()->create();
@@ -95,6 +51,19 @@ test('a follow up chat on the same ticket reuses the conversation id', function 
         ->assertRedirect();
 
     expect($ticket->refresh()->ai_conversation_id)->toBe($firstConversationId);
+
+    $run = AiRun::query()->where('ticket_id', $ticket->id)->latest('id')->firstOrFail();
+    expect($run->feature)->toBe('ticket-chat')
+        ->and($run->status)->toBe('succeeded')
+        ->and($run->user_id)->toBe($user->id)
+        ->and($run->finished_at)->not->toBeNull()
+        ->and($run->input_hash)->not->toBeNull();
+
+    expect(AiUsage::query()->where('ai_run_id', $run->id)->exists())->toBeTrue();
+
+    TicketAssistant::assertPrompted(function (AgentPrompt $prompt): bool {
+        return $prompt->prompt === 'Second prompt.';
+    });
 
     $chatMessages = $ticket->messages()
         ->where('type', TicketMessageType::SystemMessage)
@@ -135,7 +104,7 @@ test('message is required and capped at ten thousand characters', function () {
     $user = User::factory()->create();
     $ticket = Ticket::factory()->for($user)->create();
 
-    TicketAssistant::fake();
+    TicketAssistant::fake()->preventStrayPrompts();
 
     $this->actingAs($user)
         ->post(route('tickets.ai.chat', $ticket), ['message' => ''])
@@ -144,37 +113,8 @@ test('message is required and capped at ten thousand characters', function () {
     $this->actingAs($user)
         ->post(route('tickets.ai.chat', $ticket), ['message' => str_repeat('a', 10001)])
         ->assertSessionHasErrors('message');
-});
 
-test('deleting a ticket removes its ai conversation and messages', function () {
-    config(['ai.conversations.generate_title' => false]);
-
-    $user = User::factory()->create();
-    $ticket = Ticket::factory()->for($user)->create();
-
-    TicketAssistant::fake(['Reply.']);
-
-    $this->actingAs($user)
-        ->post(route('tickets.ai.chat', $ticket), ['message' => 'Hello.'])
-        ->assertRedirect();
-
-    $conversationId = $ticket->refresh()->ai_conversation_id;
-
-    expect($conversationId)->not->toBeNull();
-
-    $messagesTable = config('ai.conversations.tables.messages', 'agent_conversation_messages');
-    $conversationsTable = config('ai.conversations.tables.conversations', 'agent_conversations');
-
-    expect(DB::table($messagesTable)->where('conversation_id', $conversationId)->count())->toBeGreaterThan(0);
-    expect(DB::table($conversationsTable)->where('id', $conversationId)->exists())->toBeTrue();
-
-    $this->actingAs($user)
-        ->delete(route('tickets.destroy', $ticket))
-        ->assertRedirect(route('tickets.index'));
-
-    $this->assertModelMissing($ticket);
-    expect(DB::table($messagesTable)->where('conversation_id', $conversationId)->count())->toBe(0);
-    expect(DB::table($conversationsTable)->where('id', $conversationId)->exists())->toBeFalse();
+    TicketAssistant::assertNeverPrompted();
 });
 
 test('chat falls back to the queue when the sync prompt fails and saves the user prompt immediately', function () {
